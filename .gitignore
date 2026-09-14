@@ -1,0 +1,6 @@
+/target
+/reports
+/dist
+.DS_Store
+*.png
+/go-game-teacher.zip

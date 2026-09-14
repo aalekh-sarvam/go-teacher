@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>go_teacher</title>
+<style>
+  :root { --bg:#f6f4ee; --fg:#222; --muted:#666; --card:#fff; --line:#ddd; --accent:#2f6f4f; --bad:#a33; --warn:#b8860b; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 16px 40px; font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background:var(--bg); color:var(--fg); }
+  main { max-width:1000px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:16px; margin:0 0 10px; }
+  .sub { color:var(--muted); margin:0 0 16px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin-bottom:16px; }
+  .row { display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  input[type=file] { display:none; }
+  .btn { display:inline-block; padding:10px 16px; border-radius:8px; border:1px solid var(--accent); background:var(--accent); color:#fff; cursor:pointer; font-weight:600; }
+  .btn.disabled { opacity:.45; cursor:default; }
+  label.small { font-size:13px; color:var(--muted); }
+  input[type=number] { width:110px; padding:8px; border:1px solid var(--line); border-radius:6px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:7px 6px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.03em; }
+  .bar { height:8px; background:#eee; border-radius:4px; overflow:hidden; width:160px; }
+  .bar > div { height:100%; background:var(--accent); }
+  .status { font-size:13px; color:var(--muted); }
+  .err { color:var(--bad); }
+  .ok { color:var(--accent); }
+  .warn { color:var(--warn); }
+  a { color:var(--accent); }
+  code { font-size:12px; background:#f0efe9; padding:1px 4px; border-radius:4px; }
+  .empty { color:var(--muted); font-style:italic; }
+  .actions a, .actions button { margin-right:8px; font-size:13px; }
+  .linkbtn { background:none; border:none; color:var(--bad); cursor:pointer; padding:0; font-size:13px; }
+  .banner { padding:10px 14px; border-radius:8px; margin:10px 0 0; font-weight:600; }
+  .banner.ok { background:#e5f3ea; color:#1f5a3c; }
+  .banner.warn { background:#fbf1d6; color:#7a5a00; }
+  .banner.err { background:#f9e2e2; color:#7a1f1f; }
+  /* live viewer */
+  .live { display:grid; grid-template-columns: minmax(280px, 560px) minmax(260px, 1fr); gap:18px; align-items:start; }
+  @media (max-width: 760px) { .live { grid-template-columns: 1fr; } }
+  #board { width:100%; height:auto; display:block; background:#dcb35c; border-radius:6px; }
+  .cands td, .cands th { padding:4px 6px; font-size:13px; white-space:nowrap; }
+  .cands tr.played td { background:#eef5ff; }
+  .minibar { display:inline-block; height:9px; background:#8fb7d9; border-radius:3px; vertical-align:middle; }
+  .minibar.pol { background:#c9a86a; }
+  #chart { width:100%; height:130px; display:block; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:crosshair; }
+  .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:13px; color:var(--muted); margin-bottom:10px; }
+  .controls select { padding:4px 6px; }
+  input[type=range] { width:220px; }
+  .evalline { font-size:14px; margin:6px 0 10px; }
+  .legend { font-size:12px; color:var(--muted); margin-top:8px; }
+  .viewopts { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; font-size:13px; color:var(--muted); margin:0 0 10px; padding:8px 10px; background:#f7f6f1; border-radius:8px; }
+  .viewopts label { display:inline-flex; align-items:center; gap:4px; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:3px; }
+  .files td { font-size:13px; }
+  .danger { color:var(--bad); }
+  button.small { font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  button.small.danger { border-color:#d9a3a3; }
+</style>
+</head>
+<body>
+<main>
+  <h1>go_teacher</h1>
+  <p class="sub">Upload an SGF game record. KataGo analyzes every move locally and produces a teaching report for your AI teacher.</p>
+
+  <div class="card">
+    <div class="row">
+      <label class="btn disabled" for="file" id="uploadbtn">Upload SGF file(s)</label>
+      <input id="file" type="file" accept=".sgf,application/x-go-sgf,text/plain" multiple>
+      <label class="small">Visits per move (optional, blank = analysis config default)
+        <input id="visits" type="number" min="1" step="1" placeholder="config">
+      </label>
+      <label class="small">Student
+        <select id="student"><option value="">auto (side facing the engine)</option><option value="B">Black</option><option value="W">White</option></select>
+      </label>
+      <label class="small" id="humanlabel" hidden>Human policy profile
+        <select id="human_profile"><option value="">off</option></select>
+      </label>
+    </div>
+    <div id="banner" class="banner warn">Starting KataGo and loading the model… this can take a minute.</div>
+    <p id="engine" class="status"></p>
+    <p id="message" class="status"></p>
+    <p class="status" id="quitline"></p>
+  </div>
+
+  <div class="card" id="livecard" hidden>
+    <h2>Live analysis</h2>
+    <div class="controls">
+      <label>Game <select id="jobselect"></select></label>
+      <label><input type="checkbox" id="follow" checked> follow latest analysed position</label>
+      <label>Position <input type="range" id="turnslider" min="0" max="0" value="0"> <span id="turnlabel">–</span></label>
+    </div>
+    <div class="viewopts">
+      <span><b>View:</b></span>
+      <label><input type="checkbox" id="v_cands" checked> candidate moves</label>
+      <label><input type="checkbox" id="v_terr" checked> <span class="swatch" style="background:#333"></span> territory (ownership)</label>
+      <label><input type="checkbox" id="v_policy"> <span class="swatch" style="background:#ff7f0e"></span> policy heat map</label>
+      <label id="v_human_label"><input type="checkbox" id="v_human"> <span class="swatch" style="background:#8e44ad"></span> human policy heat map</label>
+      <label>opacity <input type="range" id="v_alpha" min="10" max="100" value="60" style="width:90px"></label>
+    </div>
+    <div class="evalline" id="evalline"></div>
+    <div class="live">
+      <div>
+        <svg id="board" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"></svg>
+        <div class="legend" id="boardlegend"></div>
+      </div>
+      <div>
+        <table class="cands">
+          <thead><tr><th>Move</th><th>Win (mover)</th><th>Score</th><th>Visits</th><th>Policy</th></tr></thead>
+          <tbody id="cands"><tr><td colspan="5" class="empty">Waiting for the first analysed position…</td></tr></tbody>
+        </table>
+        <canvas id="chart"></canvas>
+        <div class="legend">Black winrate after each analysed position (green 50% line). Click to inspect a position.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Report files on disk</h2>
+    <p class="status" id="filesinfo"></p>
+    <div class="row" style="margin-bottom:8px">
+      <button class="small" onclick="loadFiles()">refresh</button>
+      <button class="small danger" id="gcbtn" onclick="gcJson()">delete all JSON files</button>
+      <span class="status">Markdown reports are never touched by the JSON clean-up. JSON files hold the full per-position data (ownership and policy maps) and can be reloaded into the viewer.</span>
+    </div>
+    <table class="files">
+      <thead><tr><th>File</th><th>Type</th><th>Size</th><th>Modified</th><th></th></tr></thead>
+      <tbody id="files"><tr><td colspan="5" class="empty">No report files yet.</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Analyses</h2>
+    <table>
+      <thead><tr><th>#</th><th>File</th><th>Status</th><th>Result</th><th>Report</th></tr></thead>
+      <tbody id="jobs"><tr><td colspan="5" class="empty">Nothing analyzed yet.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmtPct = (x) => (x * 100).toFixed(1) + '%';
+const lead = (x) => x >= 0 ? 'B+' + x.toFixed(1) : 'W+' + (-x).toFixed(1);
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const COLS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
+
+let windowed = false;
+let engineReady = false;
+let wasReady = null;
+let jobs = [];
+
+// ------------------------------------------------------------- engine status
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    windowed = !!s.windowed;
+    engineReady = s.engine_state === 'ready' && s.engine_alive;
+    const b = $('banner');
+    if (s.engine_state === 'starting') {
+      b.className = 'banner warn'; b.textContent = 'Starting KataGo and loading the model… this can take a minute. You will be notified when it is ready.';
+    } else if (s.engine_state === 'failed') {
+      b.className = 'banner err'; b.textContent = 'KataGo failed to start: ' + s.engine_error + ' — fix the problem and relaunch Go Teacher.';
+    } else if (!s.engine_alive) {
+      b.className = 'banner err'; b.textContent = 'The KataGo process exited. Relaunch Go Teacher.';
+    } else {
+      b.className = 'banner ok'; b.textContent = 'KataGo is ready (' + s.engine_version + '). Upload a game to begin.';
+    }
+    if (wasReady === false && engineReady) document.title = 'go_teacher — ready';
+    wasReady = engineReady;
+    const folder = windowed
+      ? '<a href="#" onclick="openOutDir();return false;">' + esc(s.out_dir) + '</a>'
+      : '<code>' + esc(s.out_dir) + '</code>';
+    $('engine').innerHTML = 'Model <code>' + esc(s.model) + '</code> — config <code>' + esc(s.config) + '</code><br>Reports are saved to ' + folder;
+    $('quitline').innerHTML = windowed
+      ? 'Close this window or press ⌘Q to quit Go Teacher; the KataGo engine stops with it.'
+      : 'Go Teacher keeps running in the background. When you are finished: <button class="linkbtn" onclick="quitApp()">quit Go Teacher</button>';
+    $('uploadbtn').classList.toggle('disabled', !engineReady);
+    $('humanlabel').hidden = !s.human_model;
+    $('v_human_label').hidden = !s.human_model;
+    const hp = $('human_profile');
+    if (s.human_model && hp.options.length <= 1) {
+      hp.innerHTML = '<option value="">off</option>' + s.human_profiles.map(p => '<option value="' + p + '">' + p.replace('rank_', '').replace('preaz_', 'pre-AZ ').replace('proyear_', 'pro ') + '</option>').join('');
+      try { hp.value = localStorage.getItem('gt_human_profile') || ''; } catch (e) {}
+    }
+  } catch (e) {
+    $('banner').className = 'banner err'; $('banner').textContent = 'Server unreachable';
+  }
+}
+
+async function openOutDir() { await fetch('/api/open-out-dir', { method: 'POST' }); }
+async function openExternal(id, which) {
+  const r = await fetch('/api/jobs/' + id + '/open?which=' + which, { method: 'POST' });
+  if (!r.ok) $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>';
+}
+async function revealReport(id) { await fetch('/api/jobs/' + id + '/reveal', { method: 'POST' }); }
+
+async function quitApp() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    if (s.running_jobs > 0 && !confirm(s.running_jobs + ' analysis job(s) are still running and will be cancelled. Quit anyway?')) return;
+  } catch (e) {}
+  await fetch('/api/quit', { method: 'POST' });
+  document.body.innerHTML = '<main><h1>go_teacher</h1><p>Go Teacher has quit. You can close this tab.</p></main>';
+}
+
+// ------------------------------------------------------------------- upload
+$('file').addEventListener('change', async (ev) => {
+  const files = ev.target.files;
+  if (!files.length) return;
+  if (!engineReady) {
+    $('message').innerHTML = '<span class="err">KataGo is not ready yet — wait for the green banner.</span>';
+    ev.target.value = '';
+    return;
+  }
+  const fd = new FormData();
+  for (const f of files) fd.append('sgf', f, f.name);
+  fd.append('visits', $('visits').value);
+  fd.append('human_profile', $('human_profile').value);
+  fd.append('student', $('student').value);
+  try { localStorage.setItem('gt_human_profile', $('human_profile').value); } catch (e) {}
+  $('message').textContent = 'Uploading…';
+  try {
+    const r = await fetch('/api/analyze', { method: 'POST', body: fd });
+    if (!r.ok) {
+      $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>';
+    } else {
+      const j = await r.json();
+      $('message').textContent = 'Started ' + j.job_ids.length + ' analysis job(s). Watch the live view below; a full game takes several minutes.';
+      view.job = j.job_ids[0]; view.follow = true; $('follow').checked = true;
+    }
+  } catch (e) {
+    $('message').innerHTML = '<span class="err">' + esc(e) + '</span>';
+  }
+  ev.target.value = '';
+  loadJobs();
+});
+
+async function cancel(id) {
+  await fetch('/api/jobs/' + id + '/cancel', { method: 'POST' });
+  loadJobs();
+}
+
+// ---------------------------------------------------------------- jobs table
+function statusCell(j) {
+  const s = j.state;
+  switch (s.state) {
+    case 'queued': return 'Queued';
+    case 'running': {
+      const p = s.total ? Math.round(100 * s.done / s.total) : 0;
+      return '<div class="bar"><div style="width:' + p + '%"></div></div>'
+        + '<span class="status">' + s.done + ' / ' + s.total + ' positions</span> '
+        + '<button class="linkbtn" onclick="cancel(' + j.id + ')">cancel</button>';
+    }
+    case 'done': return '<span class="ok">Done</span> <span class="status">(' + s.summary.elapsed_seconds.toFixed(0) + ' s)</span>';
+    case 'failed': return '<span class="err">Failed:</span> <span class="status">' + esc(s.error) + '</span>';
+    case 'cancelled': return 'Cancelled';
+  }
+  return '';
+}
+
+function resultCell(j) {
+  if (j.state.state !== 'done') return '';
+  const s = j.state.summary;
+  return esc(s.black) + ' vs ' + esc(s.white) + ', ' + s.moves + ' moves<br>'
+    + '<span class="status">SGF: ' + esc(s.result || '?') + ' · KataGo: ' + lead(s.final_score_lead) + ' (' + fmtPct(s.final_winrate_black) + ' B)'
+    + '<br>mean loss B ' + s.black_mean_loss.toFixed(2) + ' / W ' + s.white_mean_loss.toFixed(2) + ' pts</span>';
+}
+
+function reportCell(j) {
+  if (j.state.state !== 'done') return '';
+  let a = '<div class="actions"><a href="/report/' + j.id + '">view report</a>';
+  if (windowed) {
+    a += '<a href="#" onclick="openExternal(' + j.id + ',\'md\');return false;">open .md</a>'
+       + '<a href="#" onclick="revealReport(' + j.id + ');return false;">show in Finder</a>'
+       + '<a href="#" onclick="openExternal(' + j.id + ',\'json\');return false;">open JSON</a>';
+  } else {
+    a += '<a href="/api/jobs/' + j.id + '/report.md">download .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
+  }
+  return a + '</div><span class="status"><code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></span>';
+}
+
+async function loadJobs() {
+  try {
+    const r = await fetch('/api/jobs');
+    jobs = await r.json();
+    const tb = $('jobs');
+    if (!jobs.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Nothing analyzed yet.</td></tr>'; $('livecard').hidden = true; return; }
+    tb.innerHTML = jobs.map(j => '<tr><td>' + j.id + '</td><td>' + esc(j.file_name)
+      + (j.max_visits ? '<br><span class="status">' + j.max_visits + ' visits</span>' : '')
+      + '</td><td>' + statusCell(j) + '</td><td>' + resultCell(j) + '</td><td>' + reportCell(j) + '</td></tr>').join('');
+    // job selector for the live view
+    const sel = $('jobselect');
+    const ids = jobs.map(j => j.id);
+    if (view.job === null || !ids.includes(view.job)) {
+      const running = jobs.find(j => j.state.state === 'running');
+      view.job = running ? running.id : jobs[0].id;
+    }
+    sel.innerHTML = jobs.map(j => '<option value="' + j.id + '"' + (j.id === view.job ? ' selected' : '') + '>#' + j.id + ' ' + esc(j.file_name) + (j.human_profile ? ' · ' + esc(j.human_profile) : '') + ' (' + j.state.state + ')</option>').join('');
+    $('livecard').hidden = false;
+  } catch (e) { /* ignore transient errors */ }
+}
+
+// ---------------------------------------------------------------- live view
+const view = { job: null, turn: 0, follow: true, total: 0, series: [], lastKey: '' };
+const opts = { cands: true, terr: true, policy: false, human: false, alpha: 60 };
+try { Object.assign(opts, JSON.parse(localStorage.getItem('gt_view') || '{}')); } catch (e) {}
+function applyOpts() {
+  $('v_cands').checked = opts.cands; $('v_terr').checked = opts.terr; $('v_policy').checked = opts.policy; $('v_human').checked = opts.human; $('v_alpha').value = opts.alpha;
+}
+applyOpts();
+for (const id of ['v_cands', 'v_terr', 'v_policy', 'v_human', 'v_alpha']) {
+  $(id).addEventListener('input', () => {
+    opts.cands = $('v_cands').checked; opts.terr = $('v_terr').checked; opts.policy = $('v_policy').checked; opts.human = $('v_human').checked; opts.alpha = parseInt($('v_alpha').value);
+    try { localStorage.setItem('gt_view', JSON.stringify(opts)); } catch (e) {}
+    view.lastKey = ''; refreshLive();
+  });
+}
+function optsKey() { return [opts.cands, opts.terr, opts.policy, opts.human, opts.alpha].join(','); }
+
+function heatLayer(arr, sx, sy, px, py, cell, color, alpha) {
+  // arr: policy-style array, row-major from the top-left, pass last, -1 = illegal.
+  let maxp = 0;
+  for (let i = 0; i < sx * sy; i++) if (arr[i] > maxp) maxp = arr[i];
+  if (maxp <= 0) return '';
+  let s = '';
+  for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+    const p = arr[y * sx + x];
+    if (p < 0.003) continue;
+    const a = alpha * (0.2 + 0.8 * Math.sqrt(p / maxp));
+    const h = cell * 0.86;
+    s += `<rect x="${px(x)-h/2}" y="${py(y)-h/2}" width="${h}" height="${h}" rx="4" fill="${color}" fill-opacity="${a.toFixed(3)}"/>`;
+    if (p >= 0.08) s += `<text x="${px(x)}" y="${py(y)+3}" font-size="7.5" font-weight="700" text-anchor="middle" fill="#222">${(p*100).toFixed(0)}%</text>`;
+  }
+  return s;
+}
+
+function updateLegend(t) {
+  const parts = [];
+  if (opts.terr) parts.push('Shading = KataGo\'s predicted territory (dark = Black, light = White; stronger = more certain).');
+  if (opts.policy) parts.push('Orange = raw network policy (where KataGo\'s net wants to play before any search).');
+  if (opts.human && t && t.eval && t.eval.human_policy) parts.push('Purple = human-style policy: where a player of the chosen rank would play.');
+  else if (opts.human) parts.push('Purple human policy: not available for this game (analyse with a human profile selected).');
+  if (opts.cands) parts.push('Circles = searched candidate moves: colour = quality (green best → red), size = visits, number = mover winrate.');
+  parts.push('Blue square = the move actually played.');
+  $('boardlegend').textContent = parts.join(' ');
+}
+
+$('jobselect').addEventListener('change', (e) => { view.job = parseInt(e.target.value); view.lastKey = ''; refreshLive(); });
+$('follow').addEventListener('change', (e) => { view.follow = e.target.checked; refreshLive(); });
+$('turnslider').addEventListener('input', (e) => { view.turn = parseInt(e.target.value); view.follow = false; $('follow').checked = false; refreshLive(); });
+
+function gtpToXY(mv, sy) {
+  if (!mv || mv === 'pass') return null;
+  const x = COLS.indexOf(mv[0].toUpperCase());
+  const row = parseInt(mv.slice(1));
+  if (x < 0 || isNaN(row)) return null;
+  return { x, y: sy - row };
+}
+
+function qualityColor(loss) {
+  const t = Math.max(0, Math.min(1, loss / 6));   // 0 = best, 1 = 6+ points worse
+  const hue = 125 * (1 - t);
+  return 'hsl(' + hue.toFixed(0) + ', 75%, 45%)';
+}
+
+function drawBoard(t) {
+  const sx = t.size_x, sy = t.size_y;
+  const cell = 30, pad = 26;
+  const W = pad * 2 + (sx - 1) * cell, H = pad * 2 + (sy - 1) * cell;
+  const px = (x) => pad + x * cell, py = (y) => pad + y * cell;
+  let s = '';
+  // grid
+  for (let x = 0; x < sx; x++) s += `<line x1="${px(x)}" y1="${py(0)}" x2="${px(x)}" y2="${py(sy-1)}" stroke="#5a3c1e" stroke-width="1"/>`;
+  for (let y = 0; y < sy; y++) s += `<line x1="${px(0)}" y1="${py(y)}" x2="${px(sx-1)}" y2="${py(y)}" stroke="#5a3c1e" stroke-width="1"/>`;
+  // star points
+  const stars = (n) => n === 19 ? [3, 9, 15] : n === 13 ? [3, 6, 9] : n === 9 ? [2, 4, 6] : [];
+  for (const x of stars(sx)) for (const y of stars(sy)) s += `<circle cx="${px(x)}" cy="${py(y)}" r="3" fill="#5a3c1e"/>`;
+  // coordinates
+  for (let x = 0; x < sx; x++) s += `<text x="${px(x)}" y="${H-6}" font-size="10" text-anchor="middle" fill="#5a3c1e">${COLS[x]}</text>`;
+  for (let y = 0; y < sy; y++) s += `<text x="8" y="${py(y)+3.5}" font-size="10" text-anchor="middle" fill="#5a3c1e">${sy-y}</text>`;
+  const alpha = opts.alpha / 100;
+  // territory shading (under the stones)
+  if (opts.terr && t.eval && t.eval.ownership) {
+    const o = t.eval.ownership;
+    for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+      const v = o[y * sx + x];
+      if (Math.abs(v) < 0.08) continue;
+      const h = cell * 0.92;
+      s += `<rect x="${px(x)-h/2}" y="${py(y)-h/2}" width="${h}" height="${h}" fill="${v > 0 ? '#111' : '#fff'}" fill-opacity="${(Math.abs(v) * alpha).toFixed(3)}"/>`;
+    }
+  }
+  // stones
+  for (let y = 0; y < sy; y++) for (let x = 0; x < sx; x++) {
+    const c = t.board[y][x];
+    if (c === 'X') s += `<circle cx="${px(x)}" cy="${py(y)}" r="${cell*0.47}" fill="#111" stroke="#000"/>`;
+    else if (c === 'O') s += `<circle cx="${px(x)}" cy="${py(y)}" r="${cell*0.47}" fill="#f8f8f8" stroke="#555"/>`;
+  }
+  // last move marker
+  if (t.last_move) {
+    const p = gtpToXY(t.last_move.move, sy);
+    if (p) s += `<circle cx="${px(p.x)}" cy="${py(p.y)}" r="${cell*0.2}" fill="none" stroke="${t.last_move.color === 'Black' ? '#fff' : '#000'}" stroke-width="2"/>`;
+  }
+  // policy heat maps (over stones: occupied points are -1 and skipped)
+  if (opts.policy && t.eval && t.eval.policy) s += heatLayer(t.eval.policy, sx, sy, px, py, cell, '#ff7f0e', alpha);
+  if (opts.human && t.eval && t.eval.human_policy) s += heatLayer(t.eval.human_policy, sx, sy, px, py, cell, '#8e44ad', alpha);
+  // candidates
+  if (opts.cands && t.eval && t.eval.candidates.length) {
+    const mover = t.eval.to_move;
+    const sign = mover === 'Black' ? 1 : -1;
+    const best = Math.max(...t.eval.candidates.map(c => sign * c.score_lead));
+    const maxV = Math.max(...t.eval.candidates.map(c => c.visits), 1);
+    for (const c of t.eval.candidates) {
+      const p = gtpToXY(c.move, sy);
+      if (!p) continue;
+      const wr = mover === 'Black' ? c.winrate : 1 - c.winrate;
+      const loss = best - sign * c.score_lead;
+      const r = cell * 0.47 * (0.62 + 0.38 * Math.sqrt(c.visits / maxV));
+      s += `<circle cx="${px(p.x)}" cy="${py(p.y)}" r="${r}" fill="${qualityColor(loss)}" fill-opacity="0.85" stroke="#333" stroke-width="0.6"/>`;
+      s += `<text x="${px(p.x)}" y="${py(p.y)+1}" font-size="${r > 11 ? 9.5 : 8}" font-weight="700" text-anchor="middle" fill="#fff">${(wr*100).toFixed(0)}</text>`;
+      s += `<text x="${px(p.x)}" y="${py(p.y)+9}" font-size="6.5" text-anchor="middle" fill="#fff">${c.visits}</text>`;
+    }
+  }
+  // the move actually played next
+  if (t.next_move) {
+    const p = gtpToXY(t.next_move.move, sy);
+    if (p) s += `<rect x="${px(p.x)-cell*0.36}" y="${py(p.y)-cell*0.36}" width="${cell*0.72}" height="${cell*0.72}" fill="none" stroke="#1e63d0" stroke-width="2.5" rx="3"/>`;
+  }
+  const svg = $('board');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  svg.innerHTML = s;
+}
+
+function drawCandidates(t) {
+  const tb = $('cands');
+  if (!t.eval) { tb.innerHTML = '<tr><td colspan="5" class="empty">This position has not been analysed yet.</td></tr>'; return; }
+  const mover = t.eval.to_move;
+  const total = t.eval.candidates.reduce((a, c) => a + c.visits, 0) || 1;
+  const played = t.next_move ? t.next_move.move : null;
+  tb.innerHTML = t.eval.candidates.map(c => {
+    const wr = mover === 'Black' ? c.winrate : 1 - c.winrate;
+    return '<tr' + (c.move === played ? ' class="played"' : '') + '><td><b>' + c.move + '</b>' + (c.move === played ? ' ◀ played' : '') + '</td>'
+      + '<td>' + (wr * 100).toFixed(1) + '%</td><td>' + lead(c.score_lead) + '</td>'
+      + '<td><span class="minibar" style="width:' + Math.round(90 * c.visits / total) + 'px"></span> ' + c.visits + '</td>'
+      + '<td><span class="minibar pol" style="width:' + Math.round(90 * c.prior) + 'px"></span> ' + (c.prior * 100).toFixed(1) + '%</td></tr>';
+  }).join('');
+  if (played && played !== 'pass' && !t.eval.candidates.some(c => c.move === played)) {
+    tb.innerHTML += '<tr class="played"><td><b>' + played + '</b> ◀ played</td><td colspan="4" class="status">not among KataGo\'s searched moves</td></tr>';
+  }
+}
+
+function drawChart() {
+  const cv = $('chart');
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth || 400, H = 130;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const ctx = cv.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, W, H);
+  const L = 34, R = 8, T = 8, B = 18;
+  const total = Math.max(view.total - 1, 1);
+  const X = (turn) => L + (W - L - R) * turn / total;
+  const Y = (wr) => T + (H - T - B) * (1 - wr);
+  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
+  ctx.strokeRect(L, T, W - L - R, H - T - B);
+  ctx.strokeStyle = '#2f6f4f'; ctx.setLineDash([3, 3]);
+  ctx.beginPath(); ctx.moveTo(L, Y(0.5)); ctx.lineTo(W - R, Y(0.5)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#666'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText('100%', L - 4, Y(1) + 4); ctx.fillText('50%', L - 4, Y(0.5) + 4); ctx.fillText('0%', L - 4, Y(0) + 2);
+  ctx.textAlign = 'center';
+  for (let t = 0; t <= total; t += Math.max(1, Math.round(total / 8))) ctx.fillText(t, X(t), H - 5);
+  // series (sorted by turn)
+  const pts = view.series.slice().sort((a, b) => a[0] - b[0]);
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath();
+  pts.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke();
+  ctx.fillStyle = '#222';
+  for (const p of pts) { ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), 1.6, 0, 7); ctx.fill(); }
+  // current position
+  ctx.strokeStyle = '#1e63d0'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(X(view.turn), T); ctx.lineTo(X(view.turn), H - B); ctx.stroke();
+}
+
+$('chart').addEventListener('click', (e) => {
+  const cv = $('chart');
+  const rect = cv.getBoundingClientRect();
+  const L = 34, R = 8;
+  const total = Math.max(view.total - 1, 1);
+  const frac = (e.clientX - rect.left - L) / (rect.width - L - R);
+  view.turn = Math.max(0, Math.min(total, Math.round(frac * total)));
+  view.follow = false; $('follow').checked = false;
+  $('turnslider').value = view.turn;
+  refreshLive();
+});
+
+async function refreshLive() {
+  if (view.job === null || $('livecard').hidden) return;
+  try {
+    const live = await (await fetch('/api/jobs/' + view.job + '/live')).json();
+    view.total = live.total;
+    view.series = live.series;
+    $('turnslider').max = Math.max(live.total - 1, 0);
+    if (view.follow && live.latest !== null && live.latest !== undefined) view.turn = live.latest;
+    view.turn = Math.min(view.turn, Math.max(live.total - 1, 0));
+    $('turnslider').value = view.turn;
+    const t = await (await fetch('/api/jobs/' + view.job + '/turn/' + view.turn)).json();
+    const key = view.job + ':' + view.turn + ':' + (t.eval ? t.eval.visits : 'x') + ':' + live.done + ':' + optsKey();
+    $('turnlabel').textContent = 'after move ' + view.turn + ' of ' + live.moves + ' (' + live.done + '/' + live.total + ' analysed)';
+    if (t.eval) {
+      const nm = t.next_move ? (t.next_move.color + ' ' + t.next_move.move) : 'end of game';
+      const rank = t.next_move ? t.eval.candidates.findIndex(c => c.move === t.next_move.move) : -1;
+      $('evalline').innerHTML = '<b>' + t.eval.to_move + ' to play.</b> Black winrate <b>' + fmtPct(t.eval.winrate) + '</b>, score <b>' + lead(t.eval.score_lead) + '</b>, ' + t.eval.visits + ' visits. '
+        + 'Move played: <b>' + esc(nm) + '</b>' + (rank >= 0 ? ' (KataGo\'s #' + (rank + 1) + ' choice)' : (t.next_move && t.next_move.move !== 'pass' ? ' (not among searched moves)' : '')) + '.';
+    } else {
+      $('evalline').innerHTML = '<span class="status">Position after move ' + view.turn + ' — KataGo has not reached this position yet.</span>';
+    }
+    if (key !== view.lastKey) {
+      view.lastKey = key;
+      drawBoard(t);
+      drawCandidates(t);
+      updateLegend(t);
+    }
+    drawChart();
+  } catch (e) { /* transient */ }
+}
+
+// -------------------------------------------------------------- files on disk
+const fmtSize = (b) => b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : b > 1024 ? (b / 1024).toFixed(0) + ' KB' : b + ' B';
+let armed = {};   // two-step confirmation for deletes: name -> timeout id
+function arm(key, btn, label, action) {
+  if (armed[key]) { clearTimeout(armed[key]); delete armed[key]; btn.textContent = label; action(); return; }
+  btn.textContent = 'click again to confirm';
+  armed[key] = setTimeout(() => { delete armed[key]; btn.textContent = label; }, 4000);
+}
+async function loadFiles() {
+  try {
+    const d = await (await fetch('/api/files')).json();
+    $('filesinfo').innerHTML = '<code>' + esc(d.out_dir) + '</code> — ' + d.files.length + ' files, ' + d.json_count + ' JSON (' + fmtSize(d.json_bytes) + ')';
+    $('gcbtn').disabled = d.json_count === 0;
+    const tb = $('files');
+    if (!d.files.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No report files yet.</td></tr>'; return; }
+    tb.innerHTML = d.files.map(f => '<tr><td>' + esc(f.name) + '</td><td>' + f.kind + '</td><td>' + fmtSize(f.size) + '</td><td>' + esc(f.modified.replace('T', ' ').slice(0, 19)) + '</td><td>'
+      + (f.kind === 'json' ? '<button class="small" onclick="loadJson(this.dataset.n)" data-n="' + esc(f.name) + '">load into viewer</button> ' : '')
+      + '<button class="small danger" onclick="delFile(this)" data-n="' + esc(f.name) + '">delete</button></td></tr>').join('');
+  } catch (e) {}
+}
+function delFile(btn) {
+  const name = btn.dataset.n;
+  arm('f:' + name, btn, 'delete', async () => {
+    const r = await fetch('/api/files/' + encodeURIComponent(name), { method: 'DELETE' });
+    if (!r.ok) $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>';
+    loadFiles();
+  });
+}
+function gcJson() {
+  arm('gc', $('gcbtn'), 'delete all JSON files', async () => {
+    const d = await (await fetch('/api/files/gc', { method: 'POST' })).json();
+    $('message').textContent = 'Deleted ' + d.deleted + ' JSON file(s), freed ' + fmtSize(d.bytes) + '.';
+    loadFiles();
+  });
+}
+async function loadJson(name) {
+  const r = await fetch('/api/files/' + encodeURIComponent(name) + '/load', { method: 'POST' });
+  if (!r.ok) { $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; return; }
+  const d = await r.json();
+  view.job = d.job_id; view.follow = false; $('follow').checked = false; view.turn = 0; view.lastKey = '';
+  await loadJobs(); refreshLive();
+  $('message').textContent = 'Loaded ' + name + ' into the viewer.';
+}
+
+// ------------------------------------------------------------------ polling
+loadStatus();
+loadJobs().then(refreshLive);
+setInterval(loadJobs, 1500);
+loadFiles();
+setInterval(loadFiles, 6000);
+setInterval(refreshLive, 1000);
+setInterval(() => { if (!engineReady) loadStatus(); }, 2000);
+setInterval(loadStatus, 15000);
+window.addEventListener('resize', drawChart);
+</script>
+</body>
+</html>

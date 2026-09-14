@@ -1,0 +1,28 @@
+[package]
+name = "go_teacher"
+version = "0.1.0"
+edition = "2021"
+description = "Analyze Go (SGF) games move by move with KataGo and produce a teaching report"
+
+[[bin]]
+name = "go_teacher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.7", features = ["multipart"] }
+chrono = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tao = "0.37"
+wry = "0.57"
+muda = "0.20"
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+
+[profile.release]
+opt-level = 2
