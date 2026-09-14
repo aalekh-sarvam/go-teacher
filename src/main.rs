@@ -1,4 +1,6 @@
 mod analysis;
+mod probes;
+mod evidence;
 mod board;
 mod katago;
 mod report;

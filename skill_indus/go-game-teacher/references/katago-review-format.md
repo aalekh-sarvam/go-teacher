@@ -1,5 +1,7 @@
 # go_teacher Review Markdown Format
 
+For **report format 5 / lesson schema 2**, read [evidence-format5.md](evidence-format5.md) first. Its evidence, perspective and authoring contract supersedes the legacy fields below. Keep the game arc, stories, resources, praise and practice structure described here.
+
 Structure of the markdown produced by go_teacher (KataGo analysis). `scripts/parse_review.py` extracts everything below into JSON; this reference explains what the fields mean. The markdown is self-contained: nothing from the original SGF is needed.
 
 **Format version.** Line 3 reads `Report format: N`. This document describes format 4; the parser also accepts 3 and 2. Reports without the line are treated as format 2.

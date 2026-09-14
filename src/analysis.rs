@@ -30,6 +30,8 @@ pub struct AnalysisOptions {
     /// A second, stronger human profile ("what would a player two stones stronger do").
     #[serde(default)]
     pub human_profile_target: Option<String>,
+    #[serde(default)]
+    pub probes: crate::probes::ProbeOptions,
 }
 
 impl Default for AnalysisOptions {
@@ -43,6 +45,7 @@ impl Default for AnalysisOptions {
             two_pass: false,
             deep_visits: None,
             human_profile_target: None,
+            probes: Default::default(),
         }
     }
 }
@@ -232,6 +235,8 @@ pub struct GameAnalysis {
     /// Earlier games by the same student, for the comparison section (filled in before rendering).
     #[serde(default)]
     pub history: Vec<crate::progress::GameEntry>,
+    #[serde(default)]
+    pub probes: crate::probes::ProbeAnalysis,
 }
 
 /// Map an SGF `RU` string onto a KataGo rules name.
@@ -293,6 +298,7 @@ pub struct QueryExtras {
     pub priority: i32,
     /// Analyse the game record with these extra moves appended (alternating from the side to move).
     pub extra_moves: Vec<(Color, Option<crate::sgf::Coord>)>,
+    pub timeout_seconds: Option<u64>,
 }
 
 /// Query analysing only `turns`, at `max_visits` (None = config default), with probe extras.
@@ -324,6 +330,7 @@ pub fn build_query_ext(game: &GameRecord, rules: &str, komi: f64, opts: &Analysi
         "analyzeTurns": turns,
         "includePolicy": true,
         "includeOwnership": true,
+        "analysisPVLen": opts.pv_len,
     });
     if let Some(v) = max_visits {
         q["maxVisits"] = Value::from(v);
@@ -356,7 +363,7 @@ fn float_array(v: &Value, key: &str) -> Option<Vec<f32>> {
     let arr = v.get(key)?.as_array()?;
     Some(
         arr.iter()
-            .map(|x| ((x.as_f64().unwrap_or(0.0) * 1000.0).round() / 1000.0) as f32)
+            .map(|x| if key.to_ascii_lowercase().contains("policy") { x.as_f64().unwrap_or(0.0) as f32 } else { ((x.as_f64().unwrap_or(0.0) * 1000.0).round() / 1000.0) as f32 })
             .collect(),
     )
 }
@@ -561,10 +568,15 @@ pub async fn run_query_ext(
     let mut out: Vec<TurnEval> = Vec::with_capacity(turns.len());
     let wanted: std::collections::HashSet<usize> = turns.iter().copied().collect();
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(extras.timeout_seconds.unwrap_or(3600));
     let result: Result<()> = async {
         while seen.len() < wanted.len() {
             let msg = tokio::select! {
                 m = rx.recv() => m,
+                _ = tokio::time::sleep_until(deadline), if extras.timeout_seconds.is_some() => {
+                    let _ = engine.terminate(&id).await;
+                    bail!("analysis query timed out");
+                }
                 _ = cancel.cancelled() => {
                     let _ = engine.terminate(&id).await;
                     bail!("analysis cancelled");
@@ -617,7 +629,7 @@ fn deep_turns(reviews: &[MoveReview], teaching: &[crate::teaching::TeachingCandi
     }
     for r in reviews {
         let live = (0.05..=0.95).contains(&r.winrate_before);
-        if live && (r.winrate_before - r.winrate_after).abs() >= 0.15 {
+        if (live && (r.winrate_before - r.winrate_after).abs() >= 0.15) || ((r.winrate_before - 0.5) * (r.winrate_after - 0.5) < 0.0) {
             set.insert(r.number - 1);
             set.insert(r.number);
         }
@@ -720,6 +732,7 @@ pub async fn analyze_game(
                 reviews = build_reviews(&game, &turns, &opts);
                 teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
             }
+            Err(e) if cancel.is_cancelled() => return Err(e),
             Err(e) => warnings.push(format!("target human profile pass failed: {}", e)),
         }
     }
@@ -745,7 +758,7 @@ pub async fn analyze_game(
             ),
         }
     };
-    Ok(GameAnalysis {
+    let mut analysis = GameAnalysis {
         game,
         rules,
         komi,
@@ -766,7 +779,11 @@ pub async fn analyze_game(
         phases,
         openings,
         history: Vec::new(),
-    })
+        probes: Default::default(),
+    };
+    analysis.probes = crate::probes::analyze(engine, &analysis, &cancel, done, &mut progress).await?;
+    analysis.elapsed_seconds = started.elapsed().as_secs_f64();
+    Ok(analysis)
 }
 
 #[cfg(test)]
@@ -798,6 +815,7 @@ mod tests {
             deep_visits: Some(20),
             human_profile: Some("rank_10k".into()),
             human_profile_target: Some("rank_3k".into()),
+            probes: crate::probes::ProbeOptions { featured: 1, ..Default::default() },
             ..Default::default()
         };
         let mut progress_calls = 0;
@@ -811,14 +829,90 @@ mod tests {
         assert!(!a.openings.is_empty(), "19x19 game has corner patterns");
         assert_eq!(a.phases.len(), 3);
         let md = crate::report::render_markdown(&a);
-        for needle in ["Report format: 4", "## Teaching candidates", "## Game arc facts", "## Opening patterns", "### Time and loss", "## Appendix"] {
+        for needle in ["Report format: 5", "## Teaching candidates", "## Evidence data", "go-teacher-evidence"] {
             assert!(md.contains(needle), "report lacks {}", needle);
         }
+        assert!(!a.probes.moments.is_empty());
+        for m in &a.probes.moments {
+            assert!(m.unavailable.is_empty(), "missing fake-engine evidence: {:?}", m.unavailable);
+            assert_eq!(m.tree.len(), 3);
+            assert!(m.sequences.iter().any(|s| s.id == "played_student" && s.moves.len() >= 20));
+            assert!(m.sequences.iter().any(|s| s.id == "best_target"));
+            let i = m.move_number - 1;
+            let value = m.move_values.iter().find(|v| v["played"] == true).unwrap()["gain_vs_pass"].as_f64().unwrap();
+            let urgency = m.pass_comparison["best_vs_pass_points"].as_f64().unwrap();
+            assert!((urgency - value - a.reviews[i].point_loss).abs() < 0.002);
+        }
+        assert_eq!(a.probes.rank_fit["status"], "computed");
+        let verify = root.join("target/v5-verification");
+        std::fs::create_dir_all(&verify).unwrap();
+        std::fs::write(verify.join("report.md"), &md).unwrap();
+        std::fs::write(verify.join("parsed.json"), serde_json::to_string(&crate::evidence::build(&a)).unwrap()).unwrap();
+        let detailed = crate::report::render_detailed_markdown(&a);
+        std::fs::write(verify.join("detailed.md"), &detailed).unwrap();
+        eprintln!("Report sizes: compact {} bytes; detailed {} bytes", md.len(), detailed.len());
         let json = serde_json::to_string(&a).unwrap();
         let back: GameAnalysis = serde_json::from_str(&json).unwrap();
         assert_eq!(back.turns.len(), 21);
         engine.shutdown();
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn white_handicap_and_query_cleanup() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config = crate::katago::EngineConfig { katago:root.join("tests/fake_katago.sh"), model:root.join("Cargo.toml"),config:root.join("resources/analysis.cfg"),human_model:Some(root.join("Cargo.toml")) };
+        let engine = crate::katago::Engine::spawn(config,CancellationToken::new()).await.unwrap();
+        let game=crate::sgf::parse_game("(;SZ[9]HA[2]AB[cc][gg]PL[W]PB[AI (KataGo)]PW[Human];W[dc];B[cd];W[dd];B[ce];W[de];B[cf];W[ee];B[ef])").unwrap();
+        let opts=AnalysisOptions{max_visits:Some(10),human_profile:Some("rank_10k".into()),human_profile_target:Some("rank_8k".into()),probes:crate::probes::ProbeOptions{featured:1,visits:10,..Default::default()},..Default::default()};
+        let a=analyze_game(&engine,game.clone(),opts.clone(),CancellationToken::new(),None,|_,_,_,_|{}).await.unwrap();
+        assert_eq!(a.student,Some(Color::White));
+        assert!(!a.probes.moments.is_empty());
+        for m in &a.probes.moments {
+            assert!(m.unavailable.is_empty(),"{:?}",m.unavailable);
+            for seq in &m.sequences {assert_eq!(seq.first_to_move,Color::White);}
+            assert!(m.sequences.iter().any(|s|s.id=="best_target"));
+        }
+        let mut warnings=vec![];
+        let silent=QueryExtras{human_profile:Some("test_silent".into()),timeout_seconds:Some(1),..Default::default()};
+        let err=run_query_ext(&engine,&game,"japanese",6.5,&opts,&[0],Some(1),&silent,&CancellationToken::new(),&mut warnings,|_|{}).await.unwrap_err();
+        assert!(err.to_string().contains("timed out"));
+        let token=CancellationToken::new();let cancel=token.clone();
+        let task=async {tokio::time::sleep(std::time::Duration::from_millis(20)).await;cancel.cancel();};
+        let (_,result)=tokio::join!(task,run_query_ext(&engine,&game,"japanese",6.5,&opts,&[0],Some(1),&silent,&token,&mut warnings,|_|{}));
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        // The same engine must still serve a subsequent request after both paths.
+        let good=analyze_positions(&engine,&game,"japanese",6.5,&opts,&[0]).await.unwrap();
+        assert_eq!(good[0].to_move,Color::White);
+        let verify=root.join("target/v5-verification");std::fs::create_dir_all(&verify).unwrap();
+        std::fs::write(verify.join("white.json"),serde_json::to_string(&crate::evidence::build(&a)).unwrap()).unwrap();
+        engine.shutdown();
+    }
+
+    /// Opt-in hardware smoke test: uses the user's existing paths without changing their config.
+    #[tokio::test]
+    #[ignore = "loads the local Metal models"]
+    async fn local_metal_evidence_smoke() {
+        let root=std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let config=crate::katago::EngineConfig{katago:"/opt/homebrew/bin/katago".into(),model:"/Users/aalekhsharan/.katago/default_model.bin.gz".into(),config:"/Users/aalekhsharan/.katago/default_analysis.cfg".into(),human_model:Some("/Users/aalekhsharan/.katago/default_human_model.bin.gz".into())};
+        let engine=crate::katago::Engine::spawn(config,CancellationToken::new()).await.unwrap();
+        assert_eq!(engine.backend,"Metal");
+        eprintln!("Live engine: {} / {} / {}",engine.version,engine.backend,engine.model_name);
+        let game=crate::sgf::parse_game("(;SZ[9]KM[6.5]PB[Human]PW[AI (KataGo)];B[cc];W[gg];B[dc];W[gd];B[ee];W[ef])").unwrap();
+        let opts=AnalysisOptions{max_visits:Some(8),human_profile:Some("rank_10k".into()),human_profile_target:Some("rank_8k".into()),probes:crate::probes::ProbeOptions{featured:1,visits:8,rollout_plies:20,..Default::default()},..Default::default()};
+        let a=analyze_game(&engine,game,opts,CancellationToken::new(),None,|done,total,_,phase|eprintln!("{done}/{total} {phase}")).await.unwrap();
+        assert_eq!(a.turns.len(),7);
+        assert!(a.turns.iter().all(|t|t.human_policy.as_ref().is_some_and(|v|v.len()==82)));
+        assert!(!a.probes.moments.is_empty(),"smoke position must produce a teaching moment");
+        for m in &a.probes.moments {
+            assert!(m.unavailable.is_empty(),"live probe failures: {:?}",m.unavailable);
+            assert!(!m.ownership_plan.is_null());
+            assert!(m.sequences.iter().any(|s|s.id=="best_target"));
+        }
+        let dir=root.join("target/v5-verification");std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("live-metal.json"),serde_json::to_string(&crate::evidence::build(&a)).unwrap()).unwrap();
+        std::fs::write(dir.join("live-metal.md"),crate::report::render_markdown(&a)).unwrap();
+        engine.shutdown();
     }
 
     #[test]

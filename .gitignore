@@ -4,3 +4,6 @@
 .DS_Store
 *.png
 /go-game-teacher.zip
+
+__pycache__/
+*.pyc

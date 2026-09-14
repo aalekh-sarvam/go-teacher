@@ -14,7 +14,7 @@ echo "==> building release binary"
 cargo build --release
 
 echo "==> assembling $APP"
-rm -rf "$DIST"
+rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/go_teacher "$APP/Contents/MacOS/go_teacher"
 
@@ -53,9 +53,24 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <dict>
       <key>CFBundleTypeName</key><string>Smart Game Format</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>CFBundleTypeIconFile</key><string>AppIcon.icns</string>
       <key>LSHandlerRank</key><string>Alternate</string>
       <key>CFBundleTypeExtensions</key><array><string>sgf</string></array>
-      <key>LSItemContentTypes</key><array><string>public.data</string></array>
+      <key>LSItemContentTypes</key><array><string>local.go-teacher.sgf</string></array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>local.go-teacher.sgf</string>
+      <key>UTTypeDescription</key><string>Smart Game Format</string>
+      <key>UTTypeConformsTo</key><array><string>public.text</string></array>
+      <key>UTTypeIconFile</key><string>AppIcon.icns</string>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>sgf</string></array>
+        <key>public.mime-type</key><string>application/x-go-sgf</string>
+      </dict>
     </dict>
   </array>
 </dict>

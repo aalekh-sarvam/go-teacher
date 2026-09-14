@@ -87,10 +87,11 @@
         <select id="student"><option value="">auto (side facing the engine)</option><option value="B">Black</option><option value="W">White</option></select>
       </label>
       <label class="small" id="humanlabel" hidden>Human policy profile
-        <select id="human_profile"><option value="">off</option></select>
-        target (stronger) <select id="human_profile_target"><option value="">off</option></select>
+        <select id="human_profile"><option value="">auto (SGF rank)</option></select>
+        target (stronger) <select id="human_profile_target"><option value="">auto (+2 ranks)</option></select>
       </label>
     </div>
+    <p class="status">Teaching evidence adds searches for up to four featured moments, including 24-move human examples when a profile is available. The full move-by-move report is kept alongside the compact teaching report.</p>
     <div id="dropzone" class="status" style="margin-top:8px;padding:10px;border:1px dashed var(--line);border-radius:8px;text-align:center">Or drop SGF files anywhere on this page. Double-clicking an SGF in Finder opens it here too.</div>
     <div id="banner" class="banner warn">Starting KataGo and loading the model… this can take a minute.</div>
     <div id="guide" class="guide" hidden>
@@ -258,8 +259,8 @@ async function loadStatus() {
     $('v_human_label').hidden = !s.human_model;
     const hp = $('human_profile');
     if (s.human_model && hp.options.length <= 1) {
-      const opts = '<option value="">off</option>' + s.human_profiles.map(p => '<option value="' + p + '">' + p.replace('rank_', '').replace('preaz_', 'pre-AZ ').replace('proyear_', 'pro ') + '</option>').join('');
-      hp.innerHTML = opts; $('human_profile_target').innerHTML = opts;
+      const opts = '<option value="">auto (SGF rank)</option>' + s.human_profiles.map(p => '<option value="' + p + '">' + p.replace('rank_', '').replace('preaz_', 'pre-AZ ').replace('proyear_', 'pro ') + '</option>').join('');
+      hp.innerHTML = opts; $('human_profile_target').innerHTML = opts.replace('auto (SGF rank)','auto (+2 ranks)');
       try { hp.value = localStorage.getItem('gt_human_profile') || ''; $('human_profile_target').value = localStorage.getItem('gt_human_profile_target') || ''; } catch (e) {}
     }
   } catch (e) {
@@ -434,8 +435,9 @@ function reportCell(j) {
        + '<a href="#" onclick="revealReport(' + j.id + ');return false;">show in Finder</a>'
        + '<a href="#" onclick="openExternal(' + j.id + ',\'json\');return false;">open JSON</a>';
   } else {
-    a += '<a href="/api/jobs/' + j.id + '/report.md">download .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
+    a += '<a href="/api/jobs/' + j.id + '/report.md">teaching .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
   }
+  a += '<a href="/api/jobs/' + j.id + '/detailed.md">detailed .md</a>';
   return a + '</div><span class="status"><code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></span>';
 }
 

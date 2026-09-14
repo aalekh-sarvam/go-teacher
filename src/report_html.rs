@@ -70,6 +70,14 @@ pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
     let parser = Parser::new_ext(&linked, opts);
     let mut body = String::with_capacity(markdown.len() * 2);
     html::push_html(&mut body, parser);
+    // The machine block is available on demand; it should not dominate the report viewer.
+    if let Some(start) = body.find("<pre><code class=\"language-go-teacher-evidence\">") {
+        if let Some(relative_end) = body[start..].find("</code></pre>") {
+            let end = start + relative_end + "</code></pre>".len();
+            body.insert_str(end, "</details>");
+            body.insert_str(start, "<details><summary>Structured evidence for the teaching skill</summary>");
+        }
+    }
     let title = format!("Review of {}", html_escape(file_name));
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
@@ -77,7 +85,7 @@ pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
 <nav><a href=\"/\">&larr; Go Teacher</a><span class=\"toc\">{title}</span>\
 <span style=\"flex:1\"></span>\
 <a href=\"/api/jobs/{job_id}/lesson-bundle\" onclick=\"fetch(this.href,{{method:'POST'}}).then(r=>r.text()).then(t=>alert(t));return false;\">lesson bundle</a>\
-<a href=\"/api/jobs/{job_id}/report.md?inline=1\">raw Markdown</a></nav>\
+<a href=\"/api/jobs/{job_id}/detailed.md\">detailed report</a> <a href=\"/api/jobs/{job_id}/report.md?inline=1\">raw Markdown</a></nav>\
 <main>{body}</main></body></html>"
     )
 }

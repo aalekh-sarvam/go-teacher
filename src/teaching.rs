@@ -497,7 +497,7 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     let mut hints = Vec::new();
     if decided_before {
         hints.push(format!(
-            "The game was already decided before this move (Black winrate {:.0}%); judge it by the point loss, not the winrate swing.",
+            "The engine strongly favoured one side before this move (Black winrate {:.0}%); use point loss because a saturated winrate can hide large mistakes.",
             r.winrate_before * 100.0
         ));
     }

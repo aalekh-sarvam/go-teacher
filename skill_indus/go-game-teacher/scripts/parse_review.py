@@ -14,7 +14,7 @@ import sys
 
 CATEGORIES = r'(best/excellent|good|inaccuracy|mistake|big mistake|blunder)'
 MOVE = r'([A-T]\d+|pass)'
-SUPPORTED_FORMATS = {2, 3, 4}   # "Report format: N" line written by go_teacher
+SUPPORTED_FORMATS = {2, 3, 4, 5}   # "Report format: N" line written by go_teacher
 
 
 def report_format(text):
@@ -451,6 +451,19 @@ def parse_review(text, full=False):
     if fmt not in SUPPORTED_FORMATS:
         raise SystemExit(f"This report uses format {fmt}; this parser understands {sorted(SUPPORTED_FORMATS)}. "
                          "Update the go-game-teacher skill (or go_teacher) so the versions match.")
+    if fmt == 5:
+        blocks = re.findall(r'^```go-teacher-evidence\s*\n(.*?)\n```[ \t]*$', text, re.MULTILINE | re.DOTALL)
+        if len(blocks) != 1:
+            raise ValueError('Format 5 requires exactly one complete evidence block')
+        result = json.loads(blocks[0])
+        if result.get('report_format') != 5 or result.get('evidence_version') != 1:
+            raise ValueError('Evidence version does not match report format')
+        if result['game_info']['num_moves'] != len(result['moves']):
+            raise ValueError('Evidence move count mismatch')
+        for i,m in enumerate(result['moves'],1):
+            if m['number'] != i or m['color'] not in ('B','W'):
+                raise ValueError('Invalid move order or colour')
+        return result
     result = {
         'report_format': fmt,
         'game_info': parse_game_info(text),
@@ -477,16 +490,19 @@ def parse_review(text, full=False):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith('--')]
-    full = '--full' in sys.argv
-    if len(args) != 2:
-        print(f"Usage: {sys.argv[0]} <input.md> <output.json> [--full]")
-        sys.exit(1)
-    with open(args[0], 'r', encoding='utf-8') as f:
-        text = f.read()
-    result = parse_review(text, full=full)
-    with open(args[1], 'w', encoding='utf-8') as f:
+    import argparse
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument('input'); ap.add_argument('output'); ap.add_argument('--full', action='store_true')
+    ap.add_argument('--brief-output', help='Optional prose-model reading view; do not use it to generate HTML')
+    args = ap.parse_args()
+    with open(args.input, encoding='utf-8') as f: text = f.read()
+    result = parse_review(text, full=args.full)
+    with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=1, ensure_ascii=False)
+    if args.brief_output:
+        from lesson_contract import brief
+        with open(args.brief_output,'w',encoding='utf-8') as f: json.dump(brief(result),f,indent=1,ensure_ascii=False)
+    full = args.full
     t = result['teaching']
     print(f"Report format {result['report_format']}  Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "
           f"teaching candidates: {len(t['candidates'])}  praised: {len(t['praise'])}  "

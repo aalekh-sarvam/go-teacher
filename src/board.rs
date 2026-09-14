@@ -227,3 +227,78 @@ mod tests {
         assert_eq!(b.get(w), None);
     }
 }
+
+/// Replay guard for displayed and sampled lines. The engine remains authoritative for rules
+/// details (e.g. Japanese encore); this rejects malformed, occupied, suicide and ko moves.
+#[derive(Clone)]
+pub struct LegalPosition {
+    pub board: Board,
+    history: Vec<(Vec<Option<Color>>, Color)>,
+    pub to_move: Color,
+    rules: String,
+}
+
+impl LegalPosition {
+    pub fn from_game(game: &crate::sgf::GameRecord, turn: usize, rules: &str) -> anyhow::Result<Self> {
+        let mut board = Board::new(game.size_x, game.size_y);
+        for (color, stones) in [(Color::Black, &game.setup_black), (Color::White, &game.setup_white)] {
+            for &c in stones {
+                if c.x >= game.size_x || c.y >= game.size_y || board.get(c).is_some() {
+                    anyhow::bail!("invalid setup stone");
+                }
+                board.set(c, Some(color));
+            }
+        }
+        let mut p = Self { history: vec![(board.cells.clone(), game.who_moves_first())], board, to_move: game.who_moves_first(), rules: rules.to_string() };
+        for m in game.moves.iter().take(turn) {
+            // Records may explicitly contain non-alternating moves (e.g. teaching records).
+            p.to_move = m.color;
+            p.play(&m.point.map(|c| c.to_gtp(game.size_y)).unwrap_or_else(|| "pass".into()))?;
+        }
+        Ok(p)
+    }
+
+    pub fn play(&mut self, mv: &str) -> anyhow::Result<()> {
+        let next = self.to_move.opponent();
+        if mv.eq_ignore_ascii_case("pass") {
+            self.to_move = next;
+            self.history.push((self.board.cells.clone(), next));
+            return Ok(());
+        }
+        let c = Coord::from_gtp(mv, self.board.size_y).ok_or_else(|| anyhow::anyhow!("invalid coordinate {mv}"))?;
+        if c.x >= self.board.size_x || self.board.get(c).is_some() { anyhow::bail!("occupied or out-of-board move {mv}"); }
+        let mut b = self.board.clone();
+        b.play(self.to_move, c);
+        if b.get(c).is_none() && !matches!(self.rules.as_str(), "new-zealand" | "tromp-taylor") {
+            anyhow::bail!("suicide at {mv}");
+        }
+        let repeat = if matches!(self.rules.as_str(), "japanese" | "korean") {
+            self.history.len() >= 2 && self.history[self.history.len()-2].0 == b.cells
+        } else if matches!(self.rules.as_str(), "aga" | "bga" | "chinese-kgs") {
+            self.history.iter().any(|(cells, player)| *cells == b.cells && *player == next)
+        } else {
+            self.history.iter().any(|(cells, _)| *cells == b.cells)
+        };
+        if repeat { anyhow::bail!("ko repetition at {mv}"); }
+        self.board = b;
+        self.to_move = next;
+        self.history.push((self.board.cells.clone(), next));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    #[test]
+    fn setup_ko_capture_and_pass() {
+        let game=crate::sgf::parse_game("(;SZ[9]AB[ah][bi][ch]AW[bh][ag][cg][bf]PL[B])").unwrap();
+        let mut p=LegalPosition::from_game(&game,0,"japanese").unwrap();
+        p.play("B3").unwrap();
+        assert!(p.play("B2").is_err());
+        assert_eq!(p.to_move,Color::White);
+        p.play("pass").unwrap();p.play("H9").unwrap();p.play("B2").unwrap();
+        assert_eq!(p.board.get(Coord::from_gtp("B3",9).unwrap()),None);
+        assert!(p.play("I3").is_err());assert!(p.play("T3").is_err());
+    }
+}

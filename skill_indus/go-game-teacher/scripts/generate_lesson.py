@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate a self-contained interactive HTML Go lesson from parsed data + lesson content."""
 
+from pathlib import Path
+from lesson_contract import hydrate
 import json
 import sys
 
@@ -34,7 +36,7 @@ class GoBoard {
         return b;
     }
     play(x, y, color) {
-        if (x < 0 || x >= this.size || y < 0 || y >= this.size) return;
+        if (x < 0 || x >= this.size || y < 0 || y >= this.size || this.grid[y][x]) return false;
         this.grid[y][x] = color;
         const opp = color === 1 ? 2 : 1;
         for (const [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
@@ -46,6 +48,9 @@ class GoBoard {
                 }
             }
         }
+        const own = this.getGroup(x,y);
+        if(this.liberties(own)===0)for(const [gx,gy] of own)this.grid[gy][gx]=0;
+        return true;
     }
     placeStones(black, white) {
         for (const s of black || []) {
@@ -199,165 +204,11 @@ function qualityLabel(q, loss) {
 
 // ===== Lesson & Puzzle Logic =====
 function replayMoves(board, moves, upTo) {
+    board.placeStones(gameSetup.black, gameSetup.white);
     for (let i = 0; i < upTo && i < moves.length; i++) {
         const m = moves[i];
         const xy = gtpToXY(m.move, board.size);
         if (xy) board.play(xy[0], xy[1], m.color === 'B' ? 1 : 2);
-    }
-}
-
-function initLesson(idx, data, allMoves) {
-    const canvas = document.getElementById('board-'+idx);
-    const size = data.board_size || 9;
-    const board = new GoBoard(size);
-    replayMoves(board, allMoves, data.move_number - 1);
-    const baseBoard = board.clone();
-
-    // Find the opponent's last move (the move right before the one being analyzed)
-    var oppMarker = null;
-    if (data.move_number >= 2 && allMoves[data.move_number - 2]) {
-        const oppMove = allMoves[data.move_number - 2];
-        const oppXY = gtpToXY(oppMove.move, size);
-        if (oppXY) {
-            oppMarker = {x: oppXY[0], y: oppXY[1], type: 'square', color: '#24a'};
-        }
-    }
-
-    const renderer = new Renderer(canvas, board);
-    // Show opponent's last move on initial position
-    renderer.markers = oppMarker ? [oppMarker] : [];
-    renderer.draw();
-
-    const explEl = document.getElementById('explanation-'+idx);
-
-    function showPosition() {
-        renderer.board = baseBoard.clone();
-        renderer.markers = oppMarker ? [oppMarker] : [];
-        renderer.draw();
-        explEl.innerHTML = '<p class="hint-text">The blue square marks your opponent\'s last move. Click "Show played move" to see what you played, or "Show better move" to see KataGo\'s recommendation.</p>';
-        setActive(idx, 'position');
-    }
-
-    function showPlayed() {
-        const b = baseBoard.clone();
-        const xy = gtpToXY(data.played_move, size);
-        if (xy) b.play(xy[0], xy[1], data.player_color === 'W' ? 2 : 1);
-        renderer.board = b;
-        var markers = oppMarker ? [oppMarker] : [];
-        if (xy) markers.push({x:xy[0], y:xy[1], type:'circle', color:'#e44'});
-        renderer.markers = markers;
-        renderer.draw();
-        explEl.innerHTML = '<div class="played-explanation">' + data.explanation + '</div>';
-        setActive(idx, 'played');
-    }
-
-    function showPreferred() {
-        const b = baseBoard.clone();
-        const xy = gtpToXY(data.preferred_move, size);
-        if (xy) b.play(xy[0], xy[1], data.player_color === 'W' ? 2 : 1);
-        renderer.board = b;
-        var markers = oppMarker ? [oppMarker] : [];
-        if (xy) markers.push({x:xy[0], y:xy[1], type:'circle', color:'#2a2'});
-        renderer.markers = markers;
-        renderer.draw();
-        explEl.innerHTML = '<div class="preferred-explanation">' + data.variation_explanation + '</div>';
-        setActive(idx, 'preferred');
-    }
-
-    function showAlternative(k) {
-        const alt = data.alternatives[k];
-        const b = baseBoard.clone();
-        const xy = gtpToXY(alt.move, size);
-        if (xy) b.play(xy[0], xy[1], data.player_color === 'W' ? 2 : 1);
-        renderer.board = b;
-        var markers = oppMarker ? [oppMarker] : [];
-        const col = qualityColor(alt.quality, alt.loss_vs_best);
-        if (xy) markers.push({x:xy[0], y:xy[1], type:'circle', color:col});
-        renderer.markers = markers;
-        renderer.draw();
-        explEl.innerHTML = '<div class="alt-explanation" style="border-left:3px solid ' + col + ';padding-left:12px">'
-            + '<p><strong>' + alt.move + '</strong> — <span class="quality-badge" style="background:' + col + '">' + qualityLabel(alt.quality, alt.loss_vs_best) + '</span></p>'
-            + '<p>' + alt.explanation + '</p></div>';
-        setActive(idx, 'alt-' + k);
-    }
-
-    // Play a sequence of moves (alternating colours starting with `firstColor`) on the base board,
-    // optionally after the played move, and number the stones.
-    function showSequence(seq, firstColor, afterPlayed, text, cssClass) {
-        const b = baseBoard.clone();
-        var markers = oppMarker ? [oppMarker] : [];
-        let color = data.player_color === 'W' ? 2 : 1;
-        if (afterPlayed) {
-            const xy = gtpToXY(data.played_move, size);
-            if (xy) { b.play(xy[0], xy[1], color); markers.push({x:xy[0], y:xy[1], type:'circle', color:'#e44'}); }
-        }
-        let c = firstColor === 'W' ? 2 : 1;
-        seq.forEach((mv, k) => {
-            const xy = gtpToXY(mv, size);
-            if (!xy) return;
-            b.play(xy[0], xy[1], c);
-            markers.push({x:xy[0], y:xy[1], type:'label', color: c === 1 ? '#fff' : '#000', text: String(k + 1)});
-            c = c === 1 ? 2 : 1;
-        });
-        renderer.board = b; renderer.markers = markers; renderer.draw();
-        explEl.innerHTML = '<div class="' + cssClass + '">' + text + '</div>';
-    }
-
-    function showRefutation() {
-        const opp = data.player_color === 'W' ? 'B' : 'W';
-        showSequence(data.refutation || [], opp, true,
-            '<p><strong>What ' + data.played_move + ' allows.</strong> Numbered stones are the opponent\'s strongest continuation after your move (1 = their reply).</p><p>' + (data.refutation_explanation || '') + '</p>',
-            'played-explanation');
-        setActive(idx, 'refute');
-    }
-
-    function showBetterLine() {
-        showSequence(data.better_line || [], data.player_color, false,
-            '<p><strong>The better line.</strong> Numbered stones follow KataGo\'s recommendation (1 = ' + data.preferred_move + ').</p><p>' + (data.variation_explanation || '') + '</p>',
-            'preferred-explanation');
-        setActive(idx, 'line');
-    }
-
-    function showAllCandidates() {
-        renderer.board = baseBoard.clone();
-        var markers = oppMarker ? [oppMarker] : [];
-        const all = [{move: data.preferred_move, quality: 'best', loss_vs_best: 0}]
-            .concat(data.alternatives || [])
-            .concat([{move: data.played_move, quality: data.played_quality, loss_vs_best: data.point_loss}]);
-        for (const a of all) {
-            const xy = gtpToXY(a.move, size);
-            if (!xy) continue;
-            markers.push({x:xy[0], y:xy[1], type:'circle', color: qualityColor(a.quality, a.loss_vs_best)});
-            markers.push({x:xy[0], y:xy[1], type:'label', color: '#000', text: a.loss_vs_best < 0.05 ? '★' : '-' + Math.round(a.loss_vs_best)});
-        }
-        renderer.markers = markers;
-        renderer.draw();
-        explEl.innerHTML = '<p class="hint-text">Every candidate at once, coloured by how much it loses against the best move (★). Green is best, yellow a small loss, red a blunder. Click a move button for its explanation.</p>';
-        setActive(idx, 'all');
-    }
-
-    document.getElementById('btn-pos-'+idx).onclick = showPosition;
-    document.getElementById('btn-played-'+idx).onclick = showPlayed;
-    document.getElementById('btn-pref-'+idx).onclick = showPreferred;
-    const allBtn = document.getElementById('btn-all-'+idx);
-    if (allBtn) allBtn.onclick = showAllCandidates;
-    const refBtn = document.getElementById('btn-refute-'+idx);
-    if (refBtn) refBtn.onclick = showRefutation;
-    const lineBtn = document.getElementById('btn-line-'+idx);
-    if (lineBtn) lineBtn.onclick = showBetterLine;
-    (data.alternatives || []).forEach((alt, k) => {
-        const btn = document.getElementById('btn-alt-'+idx+'-'+k);
-        if (btn) { btn.onclick = () => showAlternative(k); btn.style.borderColor = qualityColor(alt.quality, alt.loss_vs_best); }
-    });
-}
-
-function setActive(idx, which) {
-    const section = document.getElementById('lesson-'+idx);
-    if (!section) return;
-    for (const el of section.querySelectorAll('.lesson-controls button, .alt-controls button')) {
-        const id = el.id.replace('btn-', '').replace('-'+idx, '');
-        const key = id === 'pos' ? 'position' : id.startsWith('alt-'+idx+'-') ? 'alt-' + id.split('-').pop() : id;
-        el.classList.toggle('active', key === which);
     }
 }
 
@@ -382,6 +233,7 @@ function initGoodMove(idx, data, allMoves) {
     renderer.draw();
 }
 
+function htmlText(s) { const e=document.createElement("span");e.textContent=s||"";return e.innerHTML; }
 function initPuzzle(idx, data) {
     const canvas = document.getElementById('pboard-'+idx);
     const size = data.board_size || 9;
@@ -411,7 +263,7 @@ function initPuzzle(idx, data) {
         const px = (e.clientX - rect.left) * scale;
         const py = (e.clientY - rect.top) * scale;
         const xy = renderer.toXY(px, py);
-        if (!xy) return;
+        if (!xy || baseBoard.grid[xy[1]][xy[0]]) return;
 
         // Reset to base
         renderer.board = baseBoard.clone();
@@ -424,8 +276,15 @@ function initPuzzle(idx, data) {
         const clickedGtp = xyToGtp(xy[0], xy[1], size);
         if (data.correct_moves.includes(clickedGtp)) {
             markers[markers.length - 1] = {x:xy[0], y:xy[1], type:'circle', color:'#2a2'};
-            renderer.markers = markers;
-            feedback.innerHTML = '<p class="correct">&#10003; Correct! ' + data.explanation + '</p>';
+            const solution=(data.correct_lines||{})[clickedGtp]||[];
+            let nextColor=3-color;
+            solution.slice(1).forEach((mv,k)=>{
+                const point=gtpToXY(mv,size);
+                if(point){renderer.board.play(point[0],point[1],nextColor);markers.push({x:point[0],y:point[1],type:'label',color:nextColor===1?'#fff':'#111',text:String(k+2),stone:nextColor});}
+                nextColor=3-nextColor;
+            });
+            renderer.markers = markers.filter(m=>!m.stone || renderer.board.grid[m.y][m.x]===m.stone);
+            feedback.innerHTML = '<p class="correct">&#10003; Correct! ' + htmlText(data.explanation) + '</p>';
             feedback.className = 'feedback correct';
         } else {
             const wrong = (data.wrong_moves || []).find(w => w.move === clickedGtp);
@@ -437,20 +296,20 @@ function initPuzzle(idx, data) {
                     let c = color === 1 ? 2 : 1;
                     wrong.refutation.forEach((mv, k) => {
                         const rxy = gtpToXY(mv, size);
-                        if (!rxy) return;
+                        if (!rxy) { c = c === 1 ? 2 : 1; return; }
                         renderer.board.play(rxy[0], rxy[1], c);
-                        markers.push({x:rxy[0], y:rxy[1], type:'label', color: c === 1 ? '#fff' : '#000', text: String(k + 1)});
+                        markers.push({x:rxy[0], y:rxy[1], type:'label', color: c === 1 ? '#fff' : '#000', text: String(k + 1), stone:c});
                         c = c === 1 ? 2 : 1;
                     });
                 }
-                renderer.markers = markers;
+                renderer.markers = markers.filter(m=>!m.stone || renderer.board.grid[m.y][m.x]===m.stone);
                 feedback.innerHTML = '<p class="wrong"><span class="quality-badge" style="background:' + col + '">' + (wrong.quality || 'mistake') + '</span> '
-                    + clickedGtp + ' is a natural try, but not the best move. ' + wrong.explanation + '</p><p class="hint-text">Try again, or use "Show evaluations".</p>';
+                    + clickedGtp + ' is a natural try, but not the best move. ' + htmlText(wrong.explanation) + '</p><p class="hint-text">Try again, or use "Show evaluations".</p>';
                 feedback.className = 'feedback wrong';
             } else {
-                renderer.markers = markers;
+                renderer.markers = markers.filter(m=>!m.stone || renderer.board.grid[m.y][m.x]===m.stone);
                 feedback.innerHTML = '<p class="wrong">&#10007; Not quite. ' + clickedGtp + ' is not the best move here. '
-                    + (data.generic_wrong_explanation || 'Ask yourself what the opponent\'s last move threatens and where the biggest point is.') + '</p>';
+                    + htmlText(data.generic_wrong_explanation || 'Ask yourself what the opponent\'s last move threatens and where the biggest point is.') + '</p>';
                 feedback.className = 'feedback wrong';
             }
         }
@@ -465,7 +324,7 @@ function initPuzzle(idx, data) {
             const xy = gtpToXY(mv, size);
             if (xy) { markers.push({x:xy[0], y:xy[1], type:'circle', color:'#2a2'}); markers.push({x:xy[0], y:xy[1], type:'label', color:'#000', text:'★'}); }
         }
-        var rows = '<li><span class="quality-badge" style="background:#2a2">best</span> <strong>' + data.correct_moves.join(', ') + '</strong> — ' + data.explanation + '</li>';
+        var rows = '<li><span class="quality-badge" style="background:#2a2">best</span> <strong>' + data.correct_moves.join(', ') + '</strong> — ' + htmlText(data.explanation) + '</li>';
         for (const w of (data.wrong_moves || [])) {
             const xy = gtpToXY(w.move, size);
             const col = qualityColor(w.quality, w.loss_vs_best);
@@ -491,6 +350,8 @@ function initPuzzle(idx, data) {
     };
 }
 '''
+
+GO_BOARD_JS += Path(__file__).with_name('lesson_panels.js').read_text(encoding='utf-8')
 
 CSS = r'''
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -663,6 +524,7 @@ def build_story_html(lesson):
 
 def generate_html(parsed_data, lesson_data):
     """Generate the complete HTML file."""
+    lesson_data = hydrate(parsed_data, lesson_data)
     gi = parsed_data.get('game_info', {})
     moves = parsed_data.get('moves', [])
 
@@ -718,22 +580,22 @@ def generate_html(parsed_data, lesson_data):
     <span class="badge">{escape_html(lesson['concept_label'])}</span>
     {('<span class="badge badge-theme">' + escape_html(lesson['theme']) + '</span>') if lesson.get('theme') else ''}
     <span class="move-ref">Move {move_num}</span>
-    <span class="loss">Loss: {lesson['point_loss']} pts</span>
+    <span class="loss">Loss: {float(lesson['point_loss']):.1f} pts</span>
     {winrate_info}
     {score_info}
   </div>
   <div class="lesson-content">
     <div class="board-container">
       <canvas id="board-{i}" width="500" height="500"></canvas>
-      <div class="lesson-controls">
-        <button id="btn-pos-{i}" class="active">Position</button>
-        <button id="btn-played-{i}">Show played move</button>
-        <button id="btn-pref-{i}">Show better move</button>
-        {'<button id="btn-all-' + str(i) + '">Show all candidates</button>' if alternatives else ''}
-        {'<button id="btn-refute-' + str(i) + '">What it allows</button>' if lesson.get('refutation') else ''}
-        {'<button id="btn-line-' + str(i) + '">Better line</button>' if lesson.get('better_line') else ''}
+      <div class="sequence-controls" aria-label="Sequence playback">
+        <button id="sequence-start-{i}" aria-label="First position">|◀</button>
+        <button id="sequence-prev-{i}" aria-label="Previous move">◀</button>
+        <button id="sequence-play-{i}">Play</button>
+        <button id="sequence-next-{i}" aria-label="Next move">▶</button>
+        <button id="sequence-end-{i}" aria-label="Last position">▶|</button>
       </div>
-      {alt_buttons}
+      <input class="sequence-range" id="sequence-range-{i}" type="range" min="0" max="0" value="0" aria-label="Move in selected sequence">
+      <p id="sequence-state-{i}" class="sequence-state" aria-live="polite"></p>
       <div class="board-legend">
         <span class="legend-item"><span class="legend-swatch legend-square"></span> Opponent's last move</span>
         <span class="legend-item"><span class="legend-swatch legend-circle-red"></span> Your move</span>
@@ -743,9 +605,19 @@ def generate_html(parsed_data, lesson_data):
     </div>
     <div class="lesson-side">
       {story_html}
+      <div class="evidence-panels" aria-label="Explore this lesson">
+        <button data-panel="position" aria-expanded="true"><strong>The position</strong><span>What needs attention?</span></button>
+        <button data-panel="played" aria-expanded="false"><strong>Your move</strong><span>Follow what it allows</span></button>
+        <button data-panel="best" aria-expanded="false"><strong>A better plan</strong><span>See how the idea works</span></button>
+        <button data-panel="alternatives" aria-expanded="false"><strong>Other choices</strong><span>Compare evaluated branches</span></button>
+        <button data-panel="local" aria-expanded="false"><strong>Read the local fight</strong><span>Explore the restricted search</span></button>
+        <button data-panel="what_if" aria-expanded="false"><strong>What happens next?</strong><span>Follow a longer example</span></button>
+      </div>
+      <select class="branch-choice" id="branch-{i}" aria-label="Variation branch" hidden></select>
       <div class="explanation" id="explanation-{i}">
         <p class="hint-text">Click "Show played move" to see what you played, or "Show better move" to see KataGo's recommendation.</p>
       </div>
+      <div class="evidence-facts" id="facts-{i}"></div>
       {('<div class="level-framing"><span class="story-label">At your level</span>' + format_paragraphs(lesson['level_framing']) + '</div>') if lesson.get('level_framing') else ''}
       <div class="principle">
         <strong>Key principle:</strong> {escape_html(lesson['principle'])}
@@ -816,6 +688,8 @@ def generate_html(parsed_data, lesson_data):
     </div>
     <div class="lesson-side">
       <p class="puzzle-instructions">{player_text} to play. Find the best move — click on the board!</p>
+      {('<p class="hint-text">' + escape_html(puzzle.get('transfer_explanation','')) + '</p>') if puzzle.get('transfer_explanation') else ''}
+      {('<p class="hint-text">Adapted from <a href="' + escape_html(puzzle['source'].get('url','')) + '" target="_blank" rel="noopener">' + escape_html(puzzle['source'].get('title','external example')) + '</a>. ' + escape_html(puzzle.get('transformation','')) + '</p>') if puzzle.get('source') else ''}
       <div class="feedback" id="pfeedback-{i}"></div>
       <div class="hint-box" id="phint-{i}" style="display:none">
         <strong>Hint:</strong> {escape_html(puzzle['hint'])}
@@ -876,6 +750,10 @@ def generate_html(parsed_data, lesson_data):
             'refutation': l.get('refutation', []),
             'refutation_explanation': l.get('refutation_explanation', ''),
             'better_line': l.get('better_line', []),
+            'evidence': l.get('_evidence', {}),
+            'difficulty': l.get('_difficulty', {}),
+            'panels': l.get('panels', {}),
+            'alternative_explanations': l.get('alternative_explanations', {}),
             'alternatives': [
                 {
                     'move': a['move'],
@@ -892,6 +770,10 @@ def generate_html(parsed_data, lesson_data):
     puzzles_js = json.dumps(lesson_data.get('puzzles', []))
     good_moves_js = json.dumps(good_moves_js_list)
     moves_js = json.dumps(moves)
+    lessons_js = lessons_js.replace("<", "\\u003c")
+    puzzles_js = puzzles_js.replace("<", "\\u003c")
+    good_moves_js = good_moves_js.replace("<", "\\u003c")
+    moves_js = moves_js.replace("<", "\\u003c")
 
     # Overall feedback
     overview_html = format_paragraphs(lesson_data.get('overall_feedback', ''))
@@ -914,6 +796,24 @@ def generate_html(parsed_data, lesson_data):
 <title>{title}</title>
 <style>
 {CSS}
+.perspective-bar {{ position:sticky;top:0;z-index:10;display:flex;justify-content:space-between;gap:16px;align-items:center;padding:18px 24px;background:#f6f8f2;border:1px solid #d8dfcf;box-shadow:0 4px 15px #18302512; }}
+.perspective-bar p {{ margin:3px 0 0;color:#617062;font-size:13px; }}
+.perspective-options {{ display:flex;gap:5px; }}
+.perspective-options button,.sequence-controls button {{ border:1px solid #cbd6c8;border-radius:8px;background:white;padding:9px 13px;color:#294436;cursor:pointer; }}
+.perspective-options button.active {{ background:#294c3d;color:white;border-color:#294c3d; }}
+.evidence-panels {{ display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0; }}
+.evidence-panels button {{ text-align:left;border:1px solid #dce2d7;border-radius:10px;background:#fafbf7;padding:13px;cursor:pointer;color:#294436; }}
+.evidence-panels button span {{ display:block;font-size:12px;margin-top:5px;color:#657367; }}
+.evidence-panels button.active {{ background:#e7f0e2;border-color:#527352;box-shadow:inset 3px 0 #527352; }}
+.sequence-controls {{ display:flex;justify-content:center;gap:7px;margin:12px 0 6px; }}
+.sequence-controls button:disabled {{ opacity:.4;cursor:default; }}
+.sequence-range {{ width:100%;accent-color:#41694e; }}
+.sequence-state {{ text-align:center;min-height:20px;color:#617062;font-size:13px; }}
+.branch-choice {{ width:100%;padding:9px;margin-bottom:12px;border:1px solid #cbd6c8;border-radius:8px;background:white; }}
+.evidence-facts {{ color:#657168;font-size:12px;line-height:1.6;margin:12px 0; }}
+.evidence-facts p {{ margin:5px 0; }}
+button:focus-visible,select:focus-visible {{ outline:3px solid #ba8c36;outline-offset:3px; }}
+@media(max-width:700px) {{ .perspective-bar {{ position:static;flex-direction:column;align-items:stretch; }} .perspective-options button {{ flex:1; }} }}
 </style>
 </head>
 <body>
@@ -937,6 +837,15 @@ def generate_html(parsed_data, lesson_data):
 
 {progress_section}
 
+<section class="perspective-bar" aria-label="Lesson perspective">
+  <div><strong>Explore the sequences</strong><p>Choose whose choices you want to follow.</p></div>
+  <div class="perspective-options">
+    <button data-perspective="engine" aria-pressed="true" class="active" onclick="setPerspective('engine')">Engine</button>
+    <button data-perspective="student" aria-pressed="false" onclick="setPerspective('student')">Your level{(' · ' + escape_html(str(parsed_data.get('profiles',{}).get('student') or '').replace('rank_',''))) if parsed_data.get('profiles',{}).get('student') else ''}</button>
+    <button data-perspective="target" aria-pressed="false" onclick="setPerspective('target')">Target level{(' · ' + escape_html(str(parsed_data.get('profiles',{}).get('target') or '').replace('rank_',''))) if parsed_data.get('profiles',{}).get('target') else ''}</button>
+  </div>
+</section>
+
 {''.join(lesson_sections)}
 
 {good_moves_section}
@@ -952,6 +861,7 @@ def generate_html(parsed_data, lesson_data):
 <script>
 {GO_BOARD_JS}
 
+const gameSetup = {json.dumps({"black":gi.get("setup_black",[]),"white":gi.get("setup_white",[])})};
 const allMoves = {moves_js};
 const lessonData = {lessons_js};
 const puzzleData = {puzzles_js};
@@ -985,6 +895,10 @@ def main():
     with open(sys.argv[2], 'r') as f:
         lesson_data = json.load(f)
 
+    from validate_lesson import validate
+    errors, warnings = validate(parsed_data, lesson_data)
+    if errors:
+        raise SystemExit("Lesson validation failed:\n" + "\n".join(errors))
     html = generate_html(parsed_data, lesson_data)
 
     with open(sys.argv[3], 'w') as f:

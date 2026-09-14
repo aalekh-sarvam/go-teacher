@@ -534,6 +534,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/jobs/:id/lesson-bundle", post(lesson_bundle))
         .route("/api/engine/benchmark", get(benchmark_status).post(benchmark_start))
         .route("/api/jobs/:id/report.md", get(report_md))
+        .route("/api/jobs/:id/detailed.md", get(report_detailed))
         .route("/api/jobs/:id/report.json", get(report_json))
         .route("/api/jobs/:id/live", get(live_summary))
         .route("/api/jobs/:id/turn/:turn", get(live_turn))
@@ -1027,6 +1028,19 @@ fn serve_text(job: Option<&Job>, pick: fn(&Job) -> Option<Arc<String>>, mime: &s
     }
 }
 
+async fn report_detailed(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    let Some((md, path)) = report_paths(&s, id) else { return (StatusCode::NOT_FOUND, "report not ready").into_response() };
+    let detailed = std::path::Path::new(&md).with_extension("detailed.md");
+    if let Ok(text) = std::fs::read_to_string(detailed) {
+        return ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=go-teacher-detailed.md")], text).into_response();
+    }
+    let analysis = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<GameAnalysis>(&b).ok());
+    match analysis {
+        Some(a) => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=go-teacher-detailed.md")], crate::report::render_detailed_markdown(&a)).into_response(),
+        None => (StatusCode::NOT_FOUND, "Full JSON is needed to regenerate the detailed report; it may have been cleaned up.").into_response(),
+    }
+}
+
 async fn report_md(
     State(s): State<Shared>,
     Path(id): Path<u64>,
@@ -1442,6 +1456,7 @@ pub fn write_outputs(out_dir: &std::path::Path, base: &str, analysis: &GameAnaly
     let json_path = out_dir.join(format!("{}.json", base));
     std::fs::write(&md_path, &md)?;
     std::fs::write(&json_path, &json)?;
+    std::fs::write(out_dir.join(format!("{}.detailed.md", base)), crate::report::render_detailed_markdown(analysis))?;
     Ok((md, json, md_path, json_path))
 }
 

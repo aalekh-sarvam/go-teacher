@@ -1,5 +1,7 @@
 # HTML Build Guide
 
+For **report format 5 / lesson schema 2**, read [evidence-format5.md](evidence-format5.md) first. Its evidence, perspective and authoring contract supersedes the legacy fields below. Keep the game arc, stories, resources, praise and practice structure described here.
+
 How the interactive HTML is structured, the lesson JSON schema, and the Go board renderer API. The `scripts/generate_lesson.py` script handles all of this automatically — this reference helps you write the lesson JSON that feeds into it.
 
 ## Lesson JSON schema

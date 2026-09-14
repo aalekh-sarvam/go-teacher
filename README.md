@@ -3,6 +3,24 @@
 Analyze Go game records (SGF) move by move with a local KataGo engine and produce a long
 Markdown report that an AI teaching agent can read to give stylistic feedback on mistakes.
 
+## Teaching evidence and lessons (format 5)
+
+The compact teaching report now includes pass comparisons, evaluated variation trees,
+initiative estimates, candidate ownership plans, local reading, human-style continuations,
+missed opportunities and human-policy fit by phase. Extra searches focus on up to four teaching
+moments. Choose a student human profile and a stronger target for the two human perspectives;
+recognized SGF ranks provide defaults. See [the implementation notes](docs/IMPLEMENTATION_v5.md)
+for search scope and interpretation limits.
+
+The original detailed move-by-move report remains available through **detailed .md**. Large
+ownership/policy arrays stay in JSON. The updated [teaching skill](skill_indus/go-game-teacher/SKILL.md)
+uses panel-based lessons and joins numerical evidence directly, while researching fresh practice
+variations. Upload `skill_indus/go-game-teacher-v5.zip` to your teaching agent.
+
+For each lesson, upload only the main `.md` report. It contains the complete compact teaching
+evidence; the skill extracts its own `parsed.json` from that Markdown. The app's separate `.json`
+and the original SGF are not required.
+
 ## Setup (one time, about 15 minutes)
 
 Go Teacher analyses games with the **KataGo** engine and shares its engine setup with
