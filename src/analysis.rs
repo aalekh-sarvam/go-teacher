@@ -21,6 +21,12 @@ pub struct AnalysisOptions {
     /// Which side is the student; `None` = detect from player names.
     #[serde(default)]
     pub student: Option<Color>,
+    /// Two-pass mode: a cheap first pass over every position, then key positions re-analysed deeply.
+    #[serde(default)]
+    pub two_pass: bool,
+    /// Visits for the deep second pass (default 1000).
+    #[serde(default)]
+    pub deep_visits: Option<u64>,
 }
 
 impl Default for AnalysisOptions {
@@ -31,6 +37,8 @@ impl Default for AnalysisOptions {
             pv_len: 10,
             human_profile: None,
             student: None,
+            two_pass: false,
+            deep_visits: None,
         }
     }
 }
@@ -182,6 +190,15 @@ pub struct GameAnalysis {
     pub teaching: Vec<crate::teaching::TeachingCandidate>,
     #[serde(default)]
     pub praise: Vec<crate::teaching::PraiseCandidate>,
+    /// Turns re-analysed at `deep_visits` in two-pass mode.
+    #[serde(default)]
+    pub deepened: Vec<usize>,
+    /// Groups whose life-and-death status changed, per move.
+    #[serde(default)]
+    pub status_changes: Vec<crate::teaching::StatusChange>,
+    /// Per-phase facts for the game-arc narrative.
+    #[serde(default)]
+    pub phases: Vec<crate::teaching::PhaseFacts>,
 }
 
 /// Map an SGF `RU` string onto a KataGo rules name.
@@ -229,7 +246,8 @@ fn move_string(game: &GameRecord, m: &crate::sgf::Move) -> String {
     }
 }
 
-pub fn build_query(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOptions) -> Value {
+/// Query analysing only `turns`, at `max_visits` (None = config default).
+pub fn build_query_for(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOptions, turns: &[usize], max_visits: Option<u64>) -> Value {
     let moves: Vec<Value> = game
         .moves
         .iter()
@@ -242,7 +260,6 @@ pub fn build_query(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOpt
     for c in &game.setup_white {
         initial.push(serde_json::json!(["W", c.to_gtp(game.size_y)]));
     }
-    let turns: Vec<usize> = (0..=game.moves.len()).collect();
     let mut q = serde_json::json!({
         "moves": moves,
         "initialStones": initial,
@@ -255,7 +272,7 @@ pub fn build_query(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOpt
         "includePolicy": true,
         "includeOwnership": true,
     });
-    if let Some(v) = opts.max_visits {
+    if let Some(v) = max_visits {
         q["maxVisits"] = Value::from(v);
     }
     if let Some(p) = &opts.human_profile {
@@ -420,30 +437,29 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
     out
 }
 
-/// Run the whole game through KataGo. `progress(done, total, turn)` is called as turns complete.
-pub async fn analyze_game(
+/// One KataGo query over `turns`; calls `on_turn` as each finished position arrives.
+async fn run_query(
     engine: &Engine,
-    game: GameRecord,
-    opts: AnalysisOptions,
-    cancel: CancellationToken,
-    mut progress: impl FnMut(usize, usize, Option<&TurnEval>),
-) -> Result<GameAnalysis> {
-    let rules = katago_rules(game.rules.as_deref());
-    let komi = game.komi.unwrap_or_else(|| default_komi(&rules));
-    let started = std::time::Instant::now();
-    let started_at = chrono::Local::now().to_rfc3339();
-
-    let total = game.moves.len() + 1;
-    let query = build_query(&game, &rules, komi, &opts);
+    game: &GameRecord,
+    rules: &str,
+    komi: f64,
+    opts: &AnalysisOptions,
+    turns: &[usize],
+    max_visits: Option<u64>,
+    cancel: &CancellationToken,
+    warnings: &mut Vec<String>,
+    mut on_turn: impl FnMut(&TurnEval),
+) -> Result<Vec<TurnEval>> {
+    if turns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let query = build_query_for(game, rules, komi, opts, turns, max_visits);
     let (id, mut rx) = engine.query(query).await?;
-
-    let mut turns: Vec<Option<TurnEval>> = vec![None; total];
-    let mut done = 0usize;
-    let mut warnings = Vec::new();
-    progress(0, total, None);
-
+    let mut out: Vec<TurnEval> = Vec::with_capacity(turns.len());
+    let wanted: std::collections::HashSet<usize> = turns.iter().copied().collect();
+    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let result: Result<()> = async {
-        while done < total {
+        while seen.len() < wanted.len() {
             let msg = tokio::select! {
                 m = rx.recv() => m,
                 _ = cancel.cancelled() => {
@@ -468,12 +484,10 @@ pub async fn analyze_game(
             if v.get("isDuringSearch").and_then(|b| b.as_bool()) == Some(true) {
                 continue;
             }
-            let t = parse_turn(&v, &game, &opts)?;
-            let turn = t.turn;
-            if turn < total && turns[turn].is_none() {
-                done += 1;
-                progress(done, total, Some(&t));
-                turns[turn] = Some(t);
+            let t = parse_turn(&v, game, opts)?;
+            if wanted.contains(&t.turn) && seen.insert(t.turn) {
+                on_turn(&t);
+                out.push(t);
             }
         }
         Ok(())
@@ -481,19 +495,114 @@ pub async fn analyze_game(
     .await;
     engine.unregister(&id);
     result?;
+    Ok(out)
+}
 
-    let turns: Vec<TurnEval> = turns.into_iter().map(|t| t.expect("all turns present")).collect();
-    let reviews = build_reviews(&game, &turns, &opts);
+/// Positions worth a deep second pass: the student's teaching candidates (before and after),
+/// large winrate swings in the undecided part of the game, the opponent's biggest mistakes, the end.
+fn deep_turns(reviews: &[MoveReview], teaching: &[crate::teaching::TeachingCandidate], student: Color, n: usize) -> Vec<usize> {
+    let mut set: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+    for t in teaching {
+        set.insert(t.number - 1);
+        set.insert(t.number);
+    }
+    for r in reviews {
+        let live = (0.05..=0.95).contains(&r.winrate_before);
+        if live && (r.winrate_before - r.winrate_after).abs() >= 0.15 {
+            set.insert(r.number - 1);
+            set.insert(r.number);
+        }
+    }
+    let mut opp: Vec<&MoveReview> = reviews.iter().filter(|r| r.color != student && r.point_loss >= 2.0).collect();
+    opp.sort_by(|a, b| b.point_loss.partial_cmp(&a.point_loss).unwrap());
+    for r in opp.iter().take(6) {
+        set.insert(r.number - 1);
+        set.insert(r.number);
+    }
+    set.insert(n);
+    set.into_iter().filter(|&t| t <= n).collect()
+}
+
+/// Run the whole game through KataGo. `progress(done, total, turn)` is called as turns complete;
+/// `total` grows when a second pass is scheduled.
+pub async fn analyze_game(
+    engine: &Engine,
+    game: GameRecord,
+    opts: AnalysisOptions,
+    cancel: CancellationToken,
+    mut progress: impl FnMut(usize, usize, Option<&TurnEval>),
+) -> Result<GameAnalysis> {
+    let rules = katago_rules(game.rules.as_deref());
+    let komi = game.komi.unwrap_or_else(|| default_komi(&rules));
+    let started = std::time::Instant::now();
+    let started_at = chrono::Local::now().to_rfc3339();
+    let n = game.moves.len();
+    let total1 = n + 1;
+    let mut warnings = Vec::new();
+
+    // Pass 1: every position. In two-pass mode this is deliberately cheap.
+    let pass1_visits = if opts.two_pass { Some(opts.max_visits.unwrap_or(150)) } else { opts.max_visits };
+    let all: Vec<usize> = (0..=n).collect();
+    let mut done = 0usize;
+    progress(0, total1, None);
+    let first = run_query(engine, &game, &rules, komi, &opts, &all, pass1_visits, &cancel, &mut warnings, |t| {
+        done += 1;
+        progress(done, total1, Some(t));
+    })
+    .await?;
+    let mut turns: Vec<TurnEval> = {
+        let mut v: Vec<Option<TurnEval>> = vec![None; total1];
+        for t in first {
+            let i = t.turn;
+            v[i] = Some(t);
+        }
+        v.into_iter().map(|t| t.expect("all turns present")).collect()
+    };
+
+    let mut reviews = build_reviews(&game, &turns, &opts);
     let (student, student_reason) = crate::teaching::detect_student(&game, opts.student);
-    let teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+    let mut teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+
+    // Pass 2: re-analyse the key positions deeply and recompute everything from the merged turns.
+    let mut deepened: Vec<usize> = Vec::new();
+    if opts.two_pass {
+        let deep = deep_turns(&reviews, &teaching, student, n);
+        let deep_visits = Some(opts.deep_visits.unwrap_or(1000));
+        let total2 = total1 + deep.len();
+        progress(done, total2, None);
+        let second = run_query(engine, &game, &rules, komi, &opts, &deep, deep_visits, &cancel, &mut warnings, |t| {
+            done += 1;
+            progress(done, total2, Some(t));
+        })
+        .await?;
+        for t in second {
+            let i = t.turn;
+            turns[i] = t;
+        }
+        deepened = deep;
+        reviews = build_reviews(&game, &turns, &opts);
+        teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+    }
+
     let praise = crate::teaching::praise(&reviews, student, 3);
-    let visits_setting = match opts.max_visits {
-        Some(v) => format!("{} visits per position (user override)", v),
-        None => format!(
-            "maxVisits from {} (observed root visits: {})",
-            engine.config.config.display(),
-            turns.first().map(|t| t.visits).unwrap_or(0)
-        ),
+    let status_changes = crate::teaching::status_changes(&game, &turns);
+    let phases = crate::teaching::phase_facts(&game, &turns, &reviews, &status_changes, student);
+    let visits_setting = if opts.two_pass {
+        format!(
+            "two-pass: every position at {} visits, then {} key positions at {} visits",
+            pass1_visits.unwrap_or(0),
+            deepened.len(),
+            opts.deep_visits.unwrap_or(1000)
+        )
+    } else {
+        match opts.max_visits {
+            Some(v) => format!("{} visits per position (user override)", v),
+            None => format!(
+                "maxVisits from {} (observed root visits: {})",
+                engine.config.config.display(),
+                turns.first().map(|t| t.visits).unwrap_or(0)
+            ),
+        }
     };
     Ok(GameAnalysis {
         game,
@@ -511,6 +620,9 @@ pub async fn analyze_game(
         student_reason,
         teaching,
         praise,
+        deepened,
+        status_changes,
+        phases,
     })
 }
 

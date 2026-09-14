@@ -51,7 +51,7 @@
   .cands tr.played td { background:#eef5ff; }
   .minibar { display:inline-block; height:9px; background:#8fb7d9; border-radius:3px; vertical-align:middle; }
   .minibar.pol { background:#c9a86a; }
-  #chart { width:100%; height:130px; display:block; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:crosshair; }
+  #chart { width:100%; height:150px; display:block; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:crosshair; }
   .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:13px; color:var(--muted); margin-bottom:10px; }
   .controls select { padding:4px 6px; }
   input[type=range] { width:220px; }
@@ -76,8 +76,11 @@
     <div class="row">
       <label class="btn disabled" for="file" id="uploadbtn">Upload SGF file(s)</label>
       <input id="file" type="file" accept=".sgf,application/x-go-sgf,text/plain" multiple>
-      <label class="small">Visits per move (optional, blank = analysis config default)
+      <label class="small">Visits per move (blank = config default; with two-pass the quick pass uses 150)
         <input id="visits" type="number" min="1" step="1" placeholder="config">
+      </label>
+      <label class="small"><input type="checkbox" id="two_pass" checked> Two-pass: quick pass over every move, then key positions at
+        <input id="deep_visits" type="number" min="1" step="1" placeholder="1000" style="width:80px"> visits
       </label>
       <label class="small">Student
         <select id="student"><option value="">auto (side facing the engine)</option><option value="B">Black</option><option value="W">White</option></select>
@@ -160,7 +163,7 @@ katago version        # must print "Using Metal backend"</pre>
           <tbody id="cands"><tr><td colspan="5" class="empty">Waiting for the first analysed position…</td></tr></tbody>
         </table>
         <canvas id="chart"></canvas>
-        <div class="legend">Black winrate after each analysed position (green 50% line). Click to inspect a position.</div>
+        <div class="legend">Line: score lead (B+ above the middle, W+ below; dotted grey = Black winrate). Bars: points lost by each move (dark = Black, light = White). Click to inspect a position.</div>
       </div>
     </div>
   </div>
@@ -315,6 +318,9 @@ $('file').addEventListener('change', async (ev) => {
   fd.append('visits', $('visits').value);
   fd.append('human_profile', $('human_profile').value);
   fd.append('student', $('student').value);
+  fd.append('two_pass', $('two_pass').checked ? '1' : '0');
+  fd.append('deep_visits', $('deep_visits').value);
+  try { localStorage.setItem('gt_two_pass', $('two_pass').checked ? '1' : '0'); } catch (e) {}
   try { localStorage.setItem('gt_human_profile', $('human_profile').value); } catch (e) {}
   $('message').textContent = 'Uploading…';
   try {
@@ -408,7 +414,8 @@ async function loadJobs() {
 }
 
 // ---------------------------------------------------------------- live view
-const view = { job: null, turn: 0, follow: true, total: 0, series: [], lastKey: '' };
+const view = { job: null, turn: 0, follow: true, total: 0, series: [], losses: [], lastKey: '' };
+try { if (localStorage.getItem('gt_two_pass') === '0') document.addEventListener('DOMContentLoaded', () => { $('two_pass').checked = false; }); } catch (e) {}
 const opts = { cands: true, terr: true, policy: false, human: false, alpha: 60 };
 try { Object.assign(opts, JSON.parse(localStorage.getItem('gt_view') || '{}')); } catch (e) {}
 function applyOpts() {
@@ -558,39 +565,59 @@ function drawCandidates(t) {
 function drawChart() {
   const cv = $('chart');
   const dpr = window.devicePixelRatio || 1;
-  const W = cv.clientWidth || 400, H = 130;
+  const W = cv.clientWidth || 400, H = 150;
   cv.width = W * dpr; cv.height = H * dpr;
   const ctx = cv.getContext('2d');
   ctx.scale(dpr, dpr);
   ctx.clearRect(0, 0, W, H);
-  const L = 34, R = 8, T = 8, B = 18;
+  const L = 36, R = 36, T = 8, B = 18;
   const total = Math.max(view.total - 1, 1);
   const X = (turn) => L + (W - L - R) * turn / total;
-  const Y = (wr) => T + (H - T - B) * (1 - wr);
-  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1;
-  ctx.strokeRect(L, T, W - L - R, H - T - B);
-  ctx.strokeStyle = '#2f6f4f'; ctx.setLineDash([3, 3]);
-  ctx.beginPath(); ctx.moveTo(L, Y(0.5)); ctx.lineTo(W - R, Y(0.5)); ctx.stroke(); ctx.setLineDash([]);
-  ctx.fillStyle = '#666'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
-  ctx.fillText('100%', L - 4, Y(1) + 4); ctx.fillText('50%', L - 4, Y(0.5) + 4); ctx.fillText('0%', L - 4, Y(0) + 2);
-  ctx.textAlign = 'center';
-  for (let t = 0; t <= total; t += Math.max(1, Math.round(total / 8))) ctx.fillText(t, X(t), H - 5);
-  // series (sorted by turn)
   const pts = view.series.slice().sort((a, b) => a[0] - b[0]);
-  ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5; ctx.beginPath();
-  pts.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  const losses = (view.losses || []);
+  // Score axis: symmetric, at least ±10, grows with the data (capped ±40).
+  let maxAbs = 10;
+  for (const p of pts) maxAbs = Math.max(maxAbs, Math.abs(p[2]));
+  for (const l of losses) maxAbs = Math.max(maxAbs, Math.abs(l[2]));
+  maxAbs = Math.min(Math.ceil(maxAbs / 5) * 5, 40);
+  const Ys = (v) => T + (H - T - B) * (1 - (Math.max(-maxAbs, Math.min(maxAbs, v)) + maxAbs) / (2 * maxAbs));
+  const Yw = (wr) => T + (H - T - B) * (1 - wr);
+  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 1; ctx.strokeRect(L, T, W - L - R, H - T - B);
+  ctx.strokeStyle = '#2f6f4f'; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(L, Ys(0)); ctx.lineTo(W - R, Ys(0)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle = '#666'; ctx.font = '10px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText('B+' + maxAbs, L - 4, Ys(maxAbs) + 8); ctx.fillText('even', L - 4, Ys(0) + 4); ctx.fillText('W+' + maxAbs, L - 4, Ys(-maxAbs) - 1);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#999'; ctx.fillText('100%', W - R + 4, Yw(1) + 8); ctx.fillText('0%', W - R + 4, Yw(0) - 1);
+  ctx.fillStyle = '#666'; ctx.textAlign = 'center';
+  for (let t = 0; t <= total; t += Math.max(1, Math.round(total / 8))) ctx.fillText(t, X(t), H - 5);
+  // loss bars per move, drawn from the "even" line so height = points lost
+  const bw = Math.max(1.5, (W - L - R) / Math.max(total, 1) * 0.7);
+  for (const l of losses) {
+    const loss = Math.max(0, l[2]);
+    if (loss < 0.3) continue;
+    const x = X(l[0]) - bw / 2;
+    const y0 = Ys(0), y1 = Ys(l[1] === 'B' ? -loss : loss);   // Black's loss pushes toward W+, White's toward B+
+    ctx.fillStyle = l[1] === 'B' ? 'rgba(30,30,30,0.55)' : 'rgba(200,200,200,0.9)';
+    ctx.fillRect(x, Math.min(y0, y1), bw, Math.abs(y1 - y0));
+    if (l[1] !== 'B') { ctx.strokeStyle = '#999'; ctx.lineWidth = 0.5; ctx.strokeRect(x, Math.min(y0, y1), bw, Math.abs(y1 - y0)); }
+  }
+  // winrate (faint dotted) and score lead (solid) lines
+  ctx.strokeStyle = '#9aa'; ctx.lineWidth = 1; ctx.setLineDash([2, 3]); ctx.beginPath();
+  pts.forEach((p, i) => { const x = X(p[0]), y = Yw(p[1]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.strokeStyle = '#1e63d0'; ctx.lineWidth = 1.8; ctx.beginPath();
+  pts.forEach((p, i) => { const x = X(p[0]), y = Ys(p[2]); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); });
   ctx.stroke();
-  ctx.fillStyle = '#222';
-  for (const p of pts) { ctx.beginPath(); ctx.arc(X(p[0]), Y(p[1]), 1.6, 0, 7); ctx.fill(); }
+  ctx.fillStyle = '#1e63d0';
+  for (const p of pts) { ctx.beginPath(); ctx.arc(X(p[0]), Ys(p[2]), 1.6, 0, 7); ctx.fill(); }
   // current position
-  ctx.strokeStyle = '#1e63d0'; ctx.lineWidth = 1.5;
+  ctx.strokeStyle = '#d0641e'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(X(view.turn), T); ctx.lineTo(X(view.turn), H - B); ctx.stroke();
 }
 
 $('chart').addEventListener('click', (e) => {
   const cv = $('chart');
   const rect = cv.getBoundingClientRect();
-  const L = 34, R = 8;
+  const L = 36, R = 36;
   const total = Math.max(view.total - 1, 1);
   const frac = (e.clientX - rect.left - L) / (rect.width - L - R);
   view.turn = Math.max(0, Math.min(total, Math.round(frac * total)));
@@ -603,8 +630,9 @@ async function refreshLive() {
   if (view.job === null || $('livecard').hidden) return;
   try {
     const live = await (await fetch('/api/jobs/' + view.job + '/live')).json();
-    view.total = live.total;
+    view.total = live.positions || live.total;
     view.series = live.series;
+    view.losses = live.losses || [];
     $('turnslider').max = Math.max(live.total - 1, 0);
     if (view.follow && live.latest !== null && live.latest !== undefined) view.turn = live.latest;
     view.turn = Math.min(view.turn, Math.max(live.total - 1, 0));

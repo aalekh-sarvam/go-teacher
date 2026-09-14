@@ -39,6 +39,102 @@ pub struct TeachingCandidate {
     pub white_stones: Vec<String>,
     /// Plain-language facts derived from the numbers above.
     pub hints: Vec<String>,
+    /// Mistake theme assigned by rules (the skill may override with a reason).
+    #[serde(default)]
+    pub theme: Theme,
+    /// The opponent's best punishment after the played move (opponent moves first), and the
+    /// score it leads to. Comes from the analysis of the position after the move.
+    #[serde(default)]
+    pub refutation: Vec<String>,
+    #[serde(default)]
+    pub refutation_score: f64,
+    /// KataGo's line after the better move (mover first).
+    #[serde(default)]
+    pub better_line: Vec<String>,
+    /// Moves in the same area shortly before and after this one, with their point losses:
+    /// the cause-and-effect chain the mistake sits in.
+    #[serde(default)]
+    pub chain_before: Vec<ChainMove>,
+    #[serde(default)]
+    pub chain_after: Vec<ChainMove>,
+    /// Life-and-death changes caused by this move (from the ownership maps).
+    #[serde(default)]
+    pub status_changes: Vec<StatusChange>,
+    pub phase: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Theme {
+    Reading,
+    LifeAndDeath,
+    Tenuki,
+    OverDefence,
+    Shape,
+    Endgame,
+    Direction,
+    #[default]
+    Unknown,
+}
+
+impl Theme {
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Reading => "reading / tactics",
+            Theme::LifeAndDeath => "life and death",
+            Theme::Tenuki => "tenuki while threatened",
+            Theme::OverDefence => "over-defending / priority",
+            Theme::Shape => "shape / connection",
+            Theme::Endgame => "endgame counting",
+            Theme::Direction => "direction of play",
+            Theme::Unknown => "unclassified",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainMove {
+    pub number: usize,
+    pub color: Color,
+    pub mv: String,
+    pub point_loss: f64,
+    /// Chebyshev distance from the candidate move.
+    pub distance: usize,
+    /// "captured at N", "left X in atari", "" ...
+    pub note: String,
+}
+
+/// A group whose predicted owner changed between the position before and after a move.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusChange {
+    pub number: usize,
+    pub mover: Color,
+    pub group_color: Color,
+    pub anchor: String,
+    pub stones: usize,
+    pub from: String,
+    pub to: String,
+    pub ownership_before: f32,
+    pub ownership_after: f32,
+}
+
+/// Facts about one phase of the game, for the arc narrative.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PhaseFacts {
+    pub name: String,
+    pub first_move: usize,
+    pub last_move: usize,
+    pub winrate_start: f64,
+    pub winrate_end: f64,
+    pub score_start: f64,
+    pub score_end: f64,
+    pub student_mean_loss: f64,
+    pub opponent_mean_loss: f64,
+    pub student_worst: Option<(usize, String, f64)>,
+    pub opponent_worst: Option<(usize, String, f64)>,
+    /// Regions where ownership changed most over the phase, with points.
+    pub hot_regions: Vec<(String, f64)>,
+    pub status_changes: Vec<StatusChange>,
+    pub student_top1_rate: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +207,161 @@ pub fn region_name(c: Coord, sx: usize, sy: usize) -> &'static str {
     NAMES[ry][rx]
 }
 
+pub fn phase_of(number: usize, total: usize) -> &'static str {
+    let (o, m) = if total >= 120 { (50, 150) } else { (total / 4, total * 3 / 4) };
+    if number <= o {
+        "opening"
+    } else if number <= m {
+        "middlegame"
+    } else {
+        "endgame"
+    }
+}
+
+fn status_of(color: Color, own: f32) -> &'static str {
+    let mine = if color == Color::Black { own } else { -own };
+    if mine > 0.4 {
+        "alive"
+    } else if mine < -0.4 {
+        "dead"
+    } else {
+        "unsettled"
+    }
+}
+
+fn group_mean(own: &[f32], stones: &[Coord], sx: usize) -> f32 {
+    if stones.is_empty() {
+        return 0.0;
+    }
+    stones.iter().map(|c| own[c.y * sx + c.x]).sum::<f32>() / stones.len() as f32
+}
+
+/// Groups whose life-and-death status changed with each move, from the ownership maps.
+pub fn status_changes(game: &GameRecord, turns: &[TurnEval]) -> Vec<StatusChange> {
+    let boards = boards(game);
+    let (sx, sy) = (game.size_x, game.size_y);
+    let mut out = Vec::new();
+    for (i, m) in game.moves.iter().enumerate() {
+        let (Some(before), Some(after)) = (turns[i].ownership.as_ref(), turns[i + 1].ownership.as_ref()) else { continue };
+        if before.len() != sx * sy || after.len() != sx * sy {
+            continue;
+        }
+        for (color, mut stones, _libs) in boards[i + 1].groups() {
+            // Only stones that already existed before the move can "change" status.
+            stones.retain(|c| boards[i].get(*c) == Some(color));
+            if stones.is_empty() {
+                continue;
+            }
+            let ob = group_mean(before, &stones, sx);
+            let oa = group_mean(after, &stones, sx);
+            let (fs, ts) = (status_of(color, ob), status_of(color, oa));
+            let swing = if color == Color::Black { oa - ob } else { ob - oa };
+            // Single stones flip constantly in beginner fights; report groups of two or more,
+            // and only real changes (a clear status at both ends, or into/out of "dead").
+            let meaningful = (fs == "alive" && ts == "dead") || (fs == "dead" && ts == "alive")
+                || (stones.len() >= 3 && fs != ts && (fs == "dead" || ts == "dead" || fs == "alive"));
+            if stones.len() >= 2 && meaningful && swing.abs() >= 0.5 {
+                stones.sort_by_key(|c| (c.y, c.x));
+                out.push(StatusChange {
+                    number: i + 1,
+                    mover: m.color,
+                    group_color: color,
+                    anchor: stones[0].to_gtp(sy),
+                    stones: stones.len(),
+                    from: fs.to_string(),
+                    to: ts.to_string(),
+                    ownership_before: ob,
+                    ownership_after: oa,
+                });
+            }
+        }
+        // Stones captured by this move: report as alive/unsettled -> captured when they were not already dead.
+        for (color, stones, _l) in boards[i].groups() {
+            if stones.iter().all(|c| boards[i + 1].get(*c).is_none()) && color != m.color {
+                let ob = group_mean(before, &stones, sx);
+                if status_of(color, ob) != "dead" && (stones.len() >= 2 || status_of(color, ob) == "alive") {
+                    let mut st = stones.clone();
+                    st.sort_by_key(|c| (c.y, c.x));
+                    out.push(StatusChange {
+                        number: i + 1,
+                        mover: m.color,
+                        group_color: color,
+                        anchor: st[0].to_gtp(sy),
+                        stones: st.len(),
+                        from: status_of(color, ob).to_string(),
+                        to: "captured".to_string(),
+                        ownership_before: ob,
+                        ownership_after: if color == Color::Black { -1.0 } else { 1.0 },
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
+fn ownership_swing_by_region(before: &[f32], after: &[f32], sx: usize, sy: usize) -> Vec<(String, f64)> {
+    let mut sums: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for y in 0..sy {
+        for x in 0..sx {
+            let i = y * sx + x;
+            *sums.entry(region_name(Coord { x, y }, sx, sy)).or_insert(0.0) += (after[i] as f64 - before[i] as f64).abs();
+        }
+    }
+    let mut v: Vec<(String, f64)> = sums.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    v.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    v
+}
+
+/// Per-phase facts for the arc narrative.
+pub fn phase_facts(game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview], changes: &[StatusChange], student: Color) -> Vec<PhaseFacts> {
+    let n = game.moves.len();
+    let (sx, sy) = (game.size_x, game.size_y);
+    let mut out = Vec::new();
+    for name in ["opening", "middlegame", "endgame"] {
+        let rs: Vec<&MoveReview> = reviews.iter().filter(|r| phase_of(r.number, n) == name).collect();
+        let (Some(first), Some(last)) = (rs.first(), rs.last()) else { continue };
+        let mean = |c: Color| {
+            let v: Vec<f64> = rs.iter().filter(|r| r.color == c).map(|r| r.point_loss.max(0.0)).collect();
+            if v.is_empty() { 0.0 } else { v.iter().sum::<f64>() / v.len() as f64 }
+        };
+        let worst = |c: Color| {
+            rs.iter()
+                .filter(|r| r.color == c)
+                .max_by(|a, b| a.point_loss.partial_cmp(&b.point_loss).unwrap())
+                .filter(|r| r.point_loss >= 1.0)
+                .map(|r| (r.number, r.mv.clone(), r.point_loss))
+        };
+        let top1 = {
+            let mine: Vec<&&MoveReview> = rs.iter().filter(|r| r.color == student).collect();
+            if mine.is_empty() { 0.0 } else { mine.iter().filter(|r| r.rank == Some(0)).count() as f64 / mine.len() as f64 }
+        };
+        let hot = match (turns[first.number - 1].ownership.as_ref(), turns[last.number].ownership.as_ref()) {
+            (Some(b), Some(a)) if b.len() == sx * sy && a.len() == sx * sy => {
+                ownership_swing_by_region(b, a, sx, sy).into_iter().filter(|(_, v)| *v >= 2.0).take(3).collect()
+            }
+            _ => Vec::new(),
+        };
+        out.push(PhaseFacts {
+            name: name.to_string(),
+            first_move: first.number,
+            last_move: last.number,
+            winrate_start: turns[first.number - 1].winrate,
+            winrate_end: turns[last.number].winrate,
+            score_start: turns[first.number - 1].score_lead,
+            score_end: turns[last.number].score_lead,
+            student_mean_loss: mean(student),
+            opponent_mean_loss: mean(student.opponent()),
+            student_worst: worst(student),
+            opponent_worst: worst(student.opponent()),
+            hot_regions: hot,
+            status_changes: changes.iter().filter(|c| c.number >= first.number && c.number <= last.number).cloned().collect(),
+            student_top1_rate: top1,
+        });
+    }
+    out
+}
+
 fn chebyshev(a: Coord, b: Coord) -> usize {
     a.x.abs_diff(b.x).max(a.y.abs_diff(b.y))
 }
@@ -159,7 +410,7 @@ fn stones(board: &Board, color: Color, sy: usize) -> Vec<String> {
     v.iter().map(|c| c.to_gtp(sy)).collect()
 }
 
-fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview], boards: &[Board]) -> TeachingCandidate {
+fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview], boards: &[Board], all_changes: &[StatusChange]) -> TeachingCandidate {
     let r = &reviews[i];
     let (sx, sy) = (game.size_x, game.size_y);
     let played = gtp(&r.mv, sy);
@@ -181,6 +432,67 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     let region = loss_region(&turns[i], &turns[i + 1], r.color, sx, sy);
     let atari_after = atari_list(&boards[i + 1], sy);
     let decided_before = !(0.05..=0.95).contains(&r.winrate_before);
+
+    // The opponent's best punishment is the top candidate of the position after the move.
+    let (refutation, refutation_score) = match turns[i + 1].candidates.first() {
+        Some(c) => {
+            let mut line = vec![c.mv.clone()];
+            line.extend(c.pv.iter().skip(1).take(7).cloned());
+            (line, c.score_lead)
+        }
+        None => (Vec::new(), turns[i + 1].score_lead),
+    };
+    let better_line: Vec<String> = r.alternatives.first().map(|c| c.pv.iter().take(8).cloned().collect()).unwrap_or_default();
+
+    // Cause-and-effect chain: moves in the same area shortly before and after.
+    let chain = |range: std::ops::Range<usize>| -> Vec<ChainMove> {
+        range
+            .filter(|&j| j != i && j < reviews.len())
+            .filter_map(|j| {
+                let rj = &reviews[j];
+                let pj = gtp(&rj.mv, sy)?;
+                let d = chebyshev(pj, played?);
+                if d > 3 {
+                    return None;
+                }
+                let mut notes = Vec::new();
+                if let Some(k) = (j + 2..=(j + 10).min(game.moves.len())).find(|&k| boards[k].get(pj) != Some(rj.color)) {
+                    notes.push(format!("captured at move {}", k));
+                }
+                for c in all_changes.iter().filter(|c| c.number == rj.number) {
+                    notes.push(format!("{} {} ({} stone{}) {} → {}", c.group_color.name(), c.anchor, c.stones, if c.stones == 1 { "" } else { "s" }, c.from, c.to));
+                }
+                Some(ChainMove { number: rj.number, color: rj.color, mv: rj.mv.clone(), point_loss: rj.point_loss, distance: d, note: notes.join("; ") })
+            })
+            .collect()
+    };
+    let mut chain_before = chain(i.saturating_sub(8)..i);
+    let mut chain_after = chain(i + 1..(i + 13).min(reviews.len()));
+    // Keep the chain readable: the nearest six moves on each side.
+    if chain_before.len() > 6 {
+        chain_before.drain(..chain_before.len() - 6);
+    }
+    chain_after.truncate(6);
+    let my_changes: Vec<StatusChange> = all_changes.iter().filter(|c| c.number == r.number).cloned().collect();
+    let own_group_hurt = my_changes.iter().any(|c| c.group_color == r.color && (c.to == "dead" || c.to == "captured" || c.to == "unsettled"));
+    let phase = phase_of(r.number, game.moves.len()).to_string();
+    let theme = if captured_at.is_some() || atari_after.iter().any(|a| a.starts_with(r.color.name())) {
+        Theme::Reading
+    } else if own_group_hurt {
+        Theme::LifeAndDeath
+    } else if best_answers_last && !played_answers_last {
+        Theme::Tenuki
+    } else if played_answers_last && !best_answers_last {
+        Theme::OverDefence
+    } else if matches!(distance_to_best, Some(d) if d <= 2) {
+        Theme::Shape
+    } else if phase == "endgame" && r.point_loss < 4.0 {
+        Theme::Endgame
+    } else if matches!(distance_to_best, Some(d) if d >= 4) {
+        Theme::Direction
+    } else {
+        Theme::Unknown
+    };
 
     let mut hints = Vec::new();
     if decided_before {
@@ -215,6 +527,25 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     }
     if !atari_after.is_empty() {
         hints.push(format!("After this move these groups are in atari: {}.", atari_after.join(", ")));
+    }
+    for c in &my_changes {
+        hints.push(format!(
+            "This move changed the status of the {} group at {} ({} stone{}): {} → {}.",
+            c.group_color.name(),
+            c.anchor,
+            c.stones,
+            if c.stones == 1 { "" } else { "s" },
+            c.from,
+            c.to
+        ));
+    }
+    if !refutation.is_empty() {
+        hints.push(format!(
+            "What the move allows: {}'s strongest reply is {} (leading to {}).",
+            r.color.opponent().name(),
+            refutation.join(" "),
+            if refutation_score >= 0.0 { format!("B+{:.1}", refutation_score) } else { format!("W+{:.1}", -refutation_score) }
+        ));
     }
     if let (Some(p), Some(k)) = (r.policy_prob, r.policy_rank) {
         hints.push(format!("KataGo's network gave the played move {} (its #{} choice before any search).", if p < 0.001 { "under 0.1%".to_string() } else { format!("{:.1}%", p * 100.0) }, k));
@@ -253,6 +584,14 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
         black_stones: stones(&boards[i], Color::Black, sy),
         white_stones: stones(&boards[i], Color::White, sy),
         hints,
+        theme,
+        refutation,
+        refutation_score,
+        better_line,
+        chain_before,
+        chain_after,
+        status_changes: my_changes,
+        phase,
     }
 }
 
@@ -285,7 +624,8 @@ pub fn select(game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview], stu
         }
     }
     chosen.sort();
-    chosen.into_iter().map(|i| build(i, game, turns, reviews, &boards)).collect()
+    let changes = status_changes(game, turns);
+    chosen.into_iter().map(|i| build(i, game, turns, reviews, &boards, &changes)).collect()
 }
 
 /// Moves where the student found KataGo's only good move in a live game.

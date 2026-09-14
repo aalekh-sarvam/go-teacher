@@ -468,12 +468,22 @@ async fn live_summary(State(s): State<Shared>, Path(id): Path<u64>) -> Response 
         .enumerate()
         .filter_map(|(i, t)| t.as_ref().map(|t| serde_json::json!([i, t.winrate, t.score_lead])))
         .collect();
+    // Point loss of move i (1-based) from consecutive analysed positions: [move, colour, loss].
+    let losses: Vec<serde_json::Value> = (0..j.game.moves.len())
+        .filter_map(|i| {
+            let (Some(b), Some(a)) = (j.live.get(i).cloned().flatten(), j.live.get(i + 1).cloned().flatten()) else { return None };
+            let sign = if j.game.moves[i].color == Color::Black { 1.0 } else { -1.0 };
+            Some(serde_json::json!([i + 1, j.game.moves[i].color.letter(), sign * (b.score_lead - a.score_lead)]))
+        })
+        .collect();
     Json(serde_json::json!({
         "id": id,
         "total": j.turns_total,
         "done": done.len(),
         "latest": latest,
         "series": series,
+        "losses": losses,
+        "positions": j.game.moves.len() + 1,
         "state": j.state,
         "size_x": j.game.size_x,
         "size_y": j.game.size_y,
@@ -646,6 +656,8 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
     let mut max_visits: Option<u64> = None;
     let mut human_profile: Option<String> = None;
     let mut student: Option<Color> = None;
+    let mut two_pass = false;
+    let mut deep_visits: Option<u64> = None;
     let mut submitted: Vec<(String, Vec<u8>)> = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -662,6 +674,22 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
                         }
                     }
                     Err(e) => return (StatusCode::BAD_REQUEST, format!("upload failed: {}", e)).into_response(),
+                }
+            }
+            "two_pass" => {
+                if let Ok(t) = field.text().await {
+                    two_pass = matches!(t.trim(), "1" | "true" | "on" | "yes");
+                }
+            }
+            "deep_visits" => {
+                if let Ok(t) = field.text().await {
+                    let t = t.trim();
+                    if !t.is_empty() {
+                        match t.parse::<u64>() {
+                            Ok(v) if v > 0 => deep_visits = Some(v),
+                            _ => return (StatusCode::BAD_REQUEST, "deep visits must be a positive integer").into_response(),
+                        }
+                    }
                 }
             }
             "student" => {
@@ -714,7 +742,7 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
 
     let mut ids = Vec::new();
     for (name, bytes) in submitted {
-        match start_job(&s, name, bytes, max_visits, human_profile.clone(), student) {
+        match start_job(&s, name, bytes, max_visits, human_profile.clone(), student, two_pass, deep_visits) {
             Ok(id) => ids.push(id),
             Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         }
@@ -722,7 +750,7 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
     Json(serde_json::json!({ "job_ids": ids })).into_response()
 }
 
-pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Option<u64>, human_profile: Option<String>, student: Option<Color>) -> Result<u64> {
+pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Option<u64>, human_profile: Option<String>, student: Option<Color>, two_pass: bool, deep_visits: Option<u64>) -> Result<u64> {
     let engine = s.engine().ok_or_else(|| anyhow::anyhow!("KataGo is not running"))?;
     let text = String::from_utf8_lossy(&bytes).to_string();
     let game = parse_game(&text).map_err(|e| anyhow::anyhow!("{}: {}", file_name, e))?;
@@ -767,6 +795,8 @@ pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Opti
             max_visits,
             human_profile,
             student,
+            two_pass,
+            deep_visits,
             ..Default::default()
         };
         let st = state.clone();
@@ -774,6 +804,7 @@ pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Opti
             if let Some(j) = st.jobs.lock().unwrap().get_mut(&id) {
                 j.state = JobState::Running { done, total };
                 j.turns_done = done;
+                j.turns_total = total;
                 if let Some(t) = turn {
                     if let Some(slot) = j.live.get_mut(t.turn) {
                         *slot = Some(LiveTurn::from(t));

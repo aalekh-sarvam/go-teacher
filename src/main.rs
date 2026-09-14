@@ -124,6 +124,12 @@ enum Command {
         /// Which side is the student (B or W); default: detect from player names.
         #[arg(long)]
         student: Option<String>,
+        /// Two-pass analysis: cheap first pass (--visits, default 150) then key positions at --deep-visits.
+        #[arg(long)]
+        two_pass: bool,
+        /// Visits for the deep second pass (default 1000).
+        #[arg(long)]
+        deep_visits: Option<u64>,
     },
 }
 
@@ -341,14 +347,14 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(runtime, paths, out_dir, cli.port, cli.no_open, !cli.browser),
-        Command::Analyze { files, visits, human_profile, student } => {
+        Command::Analyze { files, visits, human_profile, student, two_pass, deep_visits } => {
             let student = match student.as_deref().map(|s| s.trim().to_ascii_uppercase()) {
                 None => None,
                 Some(s) if s == "B" || s == "BLACK" => Some(sgf::Color::Black),
                 Some(s) if s == "W" || s == "WHITE" => Some(sgf::Color::White),
                 Some(s) => anyhow::bail!("--student must be B or W, not {:?}", s),
             };
-            runtime.block_on(analyze_files(engine_cfg, out_dir, files, visits, human_profile, student))
+            runtime.block_on(analyze_files(engine_cfg, out_dir, files, visits, human_profile, student, two_pass, deep_visits))
         }
     }
 }
@@ -533,7 +539,7 @@ async fn reqwest_free_probe(url: &str) -> bool {
     String::from_utf8_lossy(&buf).contains("engine_version")
 }
 
-async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files: Vec<PathBuf>, visits: Option<u64>, human_profile: Option<String>, student: Option<sgf::Color>) -> Result<()> {
+async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files: Vec<PathBuf>, visits: Option<u64>, human_profile: Option<String>, student: Option<sgf::Color>, two_pass: bool, deep_visits: Option<u64>) -> Result<()> {
     engine_cfg.validate()?;
     // Directories expand to every .sgf inside them (sorted), so a whole folder can be batched.
     let mut expanded: Vec<PathBuf> = Vec::new();
@@ -571,6 +577,8 @@ async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files
             max_visits: visits,
             human_profile: human_profile.clone(),
             student,
+            two_pass,
+            deep_visits,
             ..Default::default()
         };
         let cancel = tokio_util::sync::CancellationToken::new();

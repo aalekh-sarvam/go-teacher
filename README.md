@@ -119,12 +119,17 @@ Ownership and policy arrays are stored only in the JSON dump, never in the Markd
 
 ### What the report contains for the teaching agent
 
-The Markdown report is written for a language model. Besides per-player statistics it has a
+The Markdown report is written for a language model and carries a `Report format: N` line
+that the lesson skill's parser checks. Besides per-player statistics it has a
 **Teaching candidates** section: the student's most instructive mistakes with facts computed
 from the board and the ownership maps (where the points went, whether the played stone was
 later captured, groups left in atari, whether KataGo's move answers the opponent's last move,
 the network's and the human-style network's probability for the played move) plus a
-puzzle-ready stone list, and a list of "only good move" finds worth praising. Only key moves
+puzzle-ready stone list, a rule-based **theme**, the opponent's strongest punishment after the
+played move ("what the move allows"), KataGo's line after the better move, and the chain of
+moves played in the same area before and after. A **Game arc facts** section gives per-phase
+numbers and every life-and-death change detected from the ownership maps, as material for a
+phase-by-phase narrative; a list of "only good move" finds is included for praise. Only key moves
 get a full entry with candidate table and diagram; every other move is one line, which keeps
 a full game to a few hundred lines.
 
@@ -153,7 +158,12 @@ or the environment variables `GO_TEACHER_KATAGO`, `GO_TEACHER_MODEL`, `GO_TEACHE
 settings, then KaTrain's bundle, then `/opt/homebrew/bin/katago` with `~/.katago/default_*`. `--port` (default 8642), `--browser`, `--no-open`, `--log-file`.
 
 Analysis strength comes from `maxVisits` in the analysis config unless you enter a value
-in the "Visits per move" box (or pass `--visits`).
+in the "Visits per move" box (or pass `--visits`). **Two-pass** mode (on by default in the
+app; `--two-pass` on the command line) first analyses every position quickly (150 visits, or
+the visits you enter) and then re-analyses the key positions deeply (1000 visits, or
+`--deep-visits`): the student's teaching candidates before and after, big swings in the
+undecided part of the game, the opponent's biggest mistakes and the final position. This
+sharpens the numbers where the lesson is at about the same total time as a flat 500.
 
 ## macOS app
 
