@@ -437,7 +437,7 @@ function reportCell(j) {
   } else {
     a += '<a href="/api/jobs/' + j.id + '/report.md">teaching .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
   }
-  a += '<a href="/api/jobs/' + j.id + '/detailed.md">detailed .md</a>';
+  a += '<a href="/report/' + j.id + '/detailed">detailed report</a>';
   return a + '</div><span class="status"><code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></span>';
 }
 

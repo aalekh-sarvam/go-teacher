@@ -12,7 +12,8 @@ moments. Choose a student human profile and a stronger target for the two human 
 recognized SGF ranks provide defaults. See [the implementation notes](docs/IMPLEMENTATION_v5.md)
 for search scope and interpretation limits.
 
-The original detailed move-by-move report remains available through **detailed .md**. Large
+The original detailed move-by-move report opens inside the app through **detailed report**, with
+rendered Markdown, back navigation and a separate **Download .md** link. Large
 ownership/policy arrays stay in JSON. The updated [teaching skill](skill_indus/go-game-teacher/SKILL.md)
 uses panel-based lessons and joins numerical evidence directly, while researching fresh practice
 variations. Upload `skill_indus/go-game-teacher-v5.zip` to your teaching agent.

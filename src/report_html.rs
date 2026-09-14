@@ -7,8 +7,11 @@ const CSS: &str = r#"
   * { box-sizing:border-box; }
   body { margin:0; padding:24px 16px 60px; font:15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background:var(--bg); color:var(--fg); }
   main { max-width:960px; margin:0 auto; background:var(--card); border:1px solid var(--line); border-radius:10px; padding:28px 34px; }
-  nav { max-width:960px; margin:0 auto 14px; display:flex; gap:16px; align-items:center; font-size:14px; }
+  nav { max-width:960px; margin:0 auto 14px; display:flex; flex-wrap:wrap; gap:12px 16px; align-items:center; font-size:14px; }
   nav a { color:var(--accent); text-decoration:none; font-weight:600; }
+  nav .back { padding:8px 12px; border:1px solid var(--accent); border-radius:8px; }
+  nav a:hover { text-decoration:underline; }
+  nav a:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
   h1 { font-size:26px; margin:0 0 12px; }
   h2 { font-size:20px; margin:34px 0 10px; padding-top:14px; border-top:1px solid var(--line); }
   h3 { font-size:16px; margin:26px 0 8px; color:#333; }
@@ -61,7 +64,12 @@ fn link_moves(markdown: &str, job_id: u64) -> String {
     out
 }
 
-pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
+pub enum ReportKind {
+    Teaching,
+    Detailed,
+}
+
+pub fn render_page(file_name: &str, markdown: &str, job_id: u64, kind: ReportKind) -> String {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
@@ -78,14 +86,30 @@ pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
             body.insert_str(start, "<details><summary>Structured evidence for the teaching skill</summary>");
         }
     }
-    let title = format!("Review of {}", html_escape(file_name));
+    let (label, back_url, back_label, other_link, markdown_file) = match kind {
+        ReportKind::Teaching => (
+            "Review",
+            format!("/?job={job_id}"),
+            "Back to analysis",
+            format!("<a href=\"/report/{job_id}/detailed\">Detailed report</a>"),
+            "report.md",
+        ),
+        ReportKind::Detailed => (
+            "Detailed review",
+            format!("/report/{job_id}"),
+            "Back to teaching report",
+            format!("<a href=\"/?job={job_id}\">Back to analysis</a>"),
+            "detailed.md",
+        ),
+    };
+    let title = format!("{label} of {}", html_escape(file_name));
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
 <title>{title}</title><style>{CSS}</style></head><body>\
-<nav><a href=\"/\">&larr; Go Teacher</a><span class=\"toc\">{title}</span>\
+<nav aria-label=\"Report navigation\"><a class=\"back\" href=\"{back_url}\">&larr; {back_label}</a><span class=\"toc\">{title}</span>\
 <span style=\"flex:1\"></span>\
 <a href=\"/api/jobs/{job_id}/lesson-bundle\" onclick=\"fetch(this.href,{{method:'POST'}}).then(r=>r.text()).then(t=>alert(t));return false;\">lesson bundle</a>\
-<a href=\"/api/jobs/{job_id}/detailed.md\">detailed report</a> <a href=\"/api/jobs/{job_id}/report.md?inline=1\">raw Markdown</a></nav>\
+{other_link} <a href=\"/api/jobs/{job_id}/{markdown_file}\">Download .md</a></nav>\
 <main>{body}</main></body></html>"
     )
 }

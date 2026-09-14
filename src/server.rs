@@ -539,6 +539,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/jobs/:id/live", get(live_summary))
         .route("/api/jobs/:id/turn/:turn", get(live_turn))
         .route("/report/:id", get(report_page))
+        .route("/report/:id/detailed", get(report_detailed_page))
         .route("/api/files", get(list_files))
         .route("/api/files/gc", post(gc_files))
         .route("/api/files/:name", axum::routing::delete(delete_file))
@@ -961,8 +962,21 @@ async fn report_page(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
             None => return (StatusCode::CONFLICT, "report not ready").into_response(),
         }
     };
-    let html = crate::report_html::render_page(&name, &md, id);
+    let html = crate::report_html::render_page(&name, &md, id, crate::report_html::ReportKind::Teaching);
     Html(html).into_response()
+}
+
+/// The detailed report uses the same Markdown renderer and navigation as the teaching report.
+async fn report_detailed_page(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    let name = {
+        let jobs = s.jobs.lock().unwrap();
+        let Some(job) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
+        job.file_name.clone()
+    };
+    match detailed_markdown(&s, id) {
+        Ok(md) => Html(crate::report_html::render_page(&name, &md, id, crate::report_html::ReportKind::Detailed)).into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn list_jobs(State(s): State<Shared>) -> Json<Vec<Job>> {
@@ -1028,16 +1042,23 @@ fn serve_text(job: Option<&Job>, pick: fn(&Job) -> Option<Arc<String>>, mime: &s
     }
 }
 
-async fn report_detailed(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
-    let Some((md, path)) = report_paths(&s, id) else { return (StatusCode::NOT_FOUND, "report not ready").into_response() };
+fn detailed_markdown(s: &Shared, id: u64) -> std::result::Result<String, (StatusCode, &'static str)> {
+    let Some((md, path)) = report_paths(s, id) else { return Err((StatusCode::NOT_FOUND, "report not ready")) };
     let detailed = std::path::Path::new(&md).with_extension("detailed.md");
     if let Ok(text) = std::fs::read_to_string(detailed) {
-        return ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=go-teacher-detailed.md")], text).into_response();
+        return Ok(text);
     }
     let analysis = std::fs::read(path).ok().and_then(|b| serde_json::from_slice::<GameAnalysis>(&b).ok());
     match analysis {
-        Some(a) => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=go-teacher-detailed.md")], crate::report::render_detailed_markdown(&a)).into_response(),
-        None => (StatusCode::NOT_FOUND, "Full JSON is needed to regenerate the detailed report; it may have been cleaned up.").into_response(),
+        Some(a) => Ok(crate::report::render_detailed_markdown(&a)),
+        None => Err((StatusCode::NOT_FOUND, "Full JSON is needed to regenerate the detailed report; it may have been cleaned up.")),
+    }
+}
+
+async fn report_detailed(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    match detailed_markdown(&s, id) {
+        Ok(md) => ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8"), (header::CONTENT_DISPOSITION, "attachment; filename=go-teacher-detailed.md")], md).into_response(),
+        Err(error) => error.into_response(),
     }
 }
 
