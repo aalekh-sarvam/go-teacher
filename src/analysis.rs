@@ -27,6 +27,9 @@ pub struct AnalysisOptions {
     /// Visits for the deep second pass (default 1000).
     #[serde(default)]
     pub deep_visits: Option<u64>,
+    /// A second, stronger human profile ("what would a player two stones stronger do").
+    #[serde(default)]
+    pub human_profile_target: Option<String>,
 }
 
 impl Default for AnalysisOptions {
@@ -39,6 +42,7 @@ impl Default for AnalysisOptions {
             student: None,
             two_pass: false,
             deep_visits: None,
+            human_profile_target: None,
         }
     }
 }
@@ -79,6 +83,9 @@ pub struct TurnEval {
     /// Human-style network policy in the same layout, when a human profile was requested.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub human_policy: Option<Vec<f32>>,
+    /// Same for the target (stronger) profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_policy_target: Option<Vec<f32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -152,6 +159,9 @@ pub struct MoveReview {
     pub played_candidate: Option<Candidate>,
     /// KataGo's preferred move and its alternatives in the position before this move.
     pub alternatives: Vec<Candidate>,
+    /// Seconds the player spent on this move, when the record has clock data.
+    #[serde(default)]
+    pub time_spent: Option<f64>,
     /// Raw-network policy probability of the played move and its 1-based rank over the whole board.
     #[serde(default)]
     pub policy_prob: Option<f32>,
@@ -166,6 +176,15 @@ pub struct MoveReview {
     pub human_top: Option<String>,
     #[serde(default)]
     pub human_top_prob: Option<f32>,
+    /// Target-profile human policy for the played move and that profile's most common move.
+    #[serde(default)]
+    pub target_prob: Option<f32>,
+    #[serde(default)]
+    pub target_rank: Option<usize>,
+    #[serde(default)]
+    pub target_top: Option<String>,
+    #[serde(default)]
+    pub target_top_prob: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,6 +218,12 @@ pub struct GameAnalysis {
     /// Per-phase facts for the game-arc narrative.
     #[serde(default)]
     pub phases: Vec<crate::teaching::PhaseFacts>,
+    /// Corner opening patterns (13x13 and larger).
+    #[serde(default)]
+    pub openings: Vec<crate::opening::CornerPattern>,
+    /// Earlier games by the same student, for the comparison section (filled in before rendering).
+    #[serde(default)]
+    pub history: Vec<crate::progress::GameEntry>,
 }
 
 /// Map an SGF `RU` string onto a KataGo rules name.
@@ -352,6 +377,7 @@ fn parse_turn(v: &Value, game: &GameRecord, opts: &AnalysisOptions) -> Result<Tu
         ownership: float_array(v, "ownership"),
         policy: float_array(v, "policy"),
         human_policy: float_array(v, "humanPolicy"),
+        human_policy_target: None,
     })
 }
 
@@ -389,6 +415,15 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
         let before = &turns[i];
         let after = &turns[i + 1];
         let mv = move_string(game, m);
+        // Time spent = this player's clock before the move minus after it (byo-yomi resets show as negative and are dropped).
+        let time_spent = m.time_left.and_then(|now| {
+            let prev = game.moves[..i].iter().rev().find(|p| p.color == m.color).and_then(|p| p.time_left);
+            match prev {
+                Some(p) if p >= now => Some(p - now),
+                Some(_) => None,
+                None => None,
+            }
+        });
         let sign = match m.color {
             Color::Black => 1.0,
             Color::White => -1.0,
@@ -403,7 +438,7 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
             (Some(arr), Some(i)) => policy_lookup(arr, i).map(|(p, r)| (Some(p), Some(r))).unwrap_or((None, None)),
             _ => (None, None),
         };
-        let (human_prob, human_rank, human_top, human_top_prob) = match (&before.human_policy, idx) {
+        let human_of = |arr: &Option<Vec<f32>>| match (arr, idx) {
             (Some(arr), Some(i)) => {
                 let (p, r) = policy_lookup(arr, i).map(|(p, r)| (Some(p), Some(r))).unwrap_or((None, None));
                 let (t, tp) = policy_top(arr, game.size_x, game.size_y).map(|(t, tp)| (Some(t), Some(tp))).unwrap_or((None, None));
@@ -411,6 +446,8 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
             }
             _ => (None, None, None, None),
         };
+        let (human_prob, human_rank, human_top, human_top_prob) = human_of(&before.human_policy);
+        let (target_prob, target_rank, target_top, target_top_prob) = human_of(&before.human_policy_target);
         out.push(MoveReview {
             number: i + 1,
             color: m.color,
@@ -426,12 +463,17 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
             rank,
             played_candidate,
             alternatives,
+            time_spent,
             policy_prob,
             policy_rank,
             human_prob,
             human_rank,
             human_top,
             human_top_prob,
+            target_prob,
+            target_rank,
+            target_top,
+            target_top_prob,
         });
     }
     out
@@ -498,6 +540,12 @@ async fn run_query(
     Ok(out)
 }
 
+/// Analyse specific positions of `game` (used for variation exploration). No progress, no cancel.
+pub async fn analyze_positions(engine: &Engine, game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOptions, turns: &[usize]) -> Result<Vec<TurnEval>> {
+    let mut warnings = Vec::new();
+    run_query(engine, game, rules, komi, opts, turns, opts.max_visits, &CancellationToken::new(), &mut warnings, |_| {}).await
+}
+
 /// Positions worth a deep second pass: the student's teaching candidates (before and after),
 /// large winrate swings in the undecided part of the game, the opponent's biggest mistakes, the end.
 fn deep_turns(reviews: &[MoveReview], teaching: &[crate::teaching::TeachingCandidate], student: Color, n: usize) -> Vec<usize> {
@@ -530,6 +578,7 @@ pub async fn analyze_game(
     game: GameRecord,
     opts: AnalysisOptions,
     cancel: CancellationToken,
+    resume: Option<Vec<Option<TurnEval>>>,
     mut progress: impl FnMut(usize, usize, Option<&TurnEval>),
 ) -> Result<GameAnalysis> {
     let rules = katago_rules(game.rules.as_deref());
@@ -542,22 +591,24 @@ pub async fn analyze_game(
 
     // Pass 1: every position. In two-pass mode this is deliberately cheap.
     let pass1_visits = if opts.two_pass { Some(opts.max_visits.unwrap_or(150)) } else { opts.max_visits };
-    let all: Vec<usize> = (0..=n).collect();
-    let mut done = 0usize;
-    progress(0, total1, None);
-    let first = run_query(engine, &game, &rules, komi, &opts, &all, pass1_visits, &cancel, &mut warnings, |t| {
+    // Resume: keep positions already analysed by an interrupted run; analyse only the rest.
+    let mut known: Vec<Option<TurnEval>> = match resume {
+        Some(v) if v.len() == total1 => v,
+        _ => vec![None; total1],
+    };
+    let missing: Vec<usize> = (0..=n).filter(|&i| known[i].is_none()).collect();
+    let mut done = total1 - missing.len();
+    progress(done, total1, None);
+    let first = run_query(engine, &game, &rules, komi, &opts, &missing, pass1_visits, &cancel, &mut warnings, |t| {
         done += 1;
         progress(done, total1, Some(t));
     })
     .await?;
-    let mut turns: Vec<TurnEval> = {
-        let mut v: Vec<Option<TurnEval>> = vec![None; total1];
-        for t in first {
-            let i = t.turn;
-            v[i] = Some(t);
-        }
-        v.into_iter().map(|t| t.expect("all turns present")).collect()
-    };
+    for t in first {
+        let i = t.turn;
+        known[i] = Some(t);
+    }
+    let mut turns: Vec<TurnEval> = known.into_iter().map(|t| t.expect("all turns present")).collect();
 
     let mut reviews = build_reviews(&game, &turns, &opts);
     let (student, student_reason) = crate::teaching::detect_student(&game, opts.student);
@@ -584,8 +635,34 @@ pub async fn analyze_game(
         teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
     }
 
+    // Target-profile human policy: one network evaluation per position, no search.
+    if let Some(target) = opts.human_profile_target.clone().filter(|t| !t.is_empty()) {
+        let mut topts = opts.clone();
+        topts.human_profile = Some(target);
+        let all: Vec<usize> = (0..=n).collect();
+        let total3 = total1 + deepened.len() + all.len();
+        progress(done, total3, None);
+        match run_query(engine, &game, &rules, komi, &topts, &all, Some(1), &cancel, &mut warnings, |_| {
+            done += 1;
+            progress(done, total3, None);
+        })
+        .await
+        {
+            Ok(extra) => {
+                for t in extra {
+                    let i = t.turn;
+                    turns[i].human_policy_target = t.human_policy;
+                }
+                reviews = build_reviews(&game, &turns, &opts);
+                teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+            }
+            Err(e) => warnings.push(format!("target human profile pass failed: {}", e)),
+        }
+    }
+
     let praise = crate::teaching::praise(&reviews, student, 3);
     let status_changes = crate::teaching::status_changes(&game, &turns);
+    let openings = crate::opening::corner_patterns(&game, &reviews);
     let phases = crate::teaching::phase_facts(&game, &turns, &reviews, &status_changes, student);
     let visits_setting = if opts.two_pass {
         format!(
@@ -623,12 +700,62 @@ pub async fn analyze_game(
         deepened,
         status_changes,
         phases,
+        openings,
+        history: Vec::new(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// End-to-end through the real engine driver against `tests/fake_katago.sh`, which speaks the
+    /// analysis protocol with canned numbers: two-pass, target profile, teaching selection, arc
+    /// facts, openings and the Markdown renderer, all without a GPU.
+    #[tokio::test]
+    async fn pipeline_with_fake_engine() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let fake = root.join("tests/fake_katago.sh");
+        let tmp = std::env::temp_dir().join(format!("go_teacher_test_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let model = tmp.join("model.bin.gz");
+        std::fs::write(&model, b"").unwrap();
+        let cfg = tmp.join("analysis.cfg");
+        std::fs::write(&cfg, "maxVisits = 10\n").unwrap();
+        let config = crate::katago::EngineConfig { katago: fake, model: model.clone(), config: cfg, human_model: Some(model.clone()) };
+        let engine = crate::katago::Engine::spawn(config, CancellationToken::new()).await.expect("fake engine starts");
+        assert_eq!(engine.backend, "Metal");
+
+        let sgf = "(;GM[1]FF[4]SZ[19]KM[6.5]PB[Me]PW[AI (KataGo)];B[pd]BL[600];W[dd]WL[600];B[pq]BL[580];W[dp]WL[590];B[qk]BL[570];W[nc]WL[560];B[qf]BL[500];W[pb]WL[550];B[qc]BL[490];W[kc]WL[540];B[cf]BL[480];W[fc]WL[530];B[bd]BL[470];W[cc]WL[520];B[ci]BL[400];W[qo]WL[510];B[qp]BL[390];W[po]WL[500];B[np]BL[380];W[qm]WL[490])";
+        let game = crate::sgf::parse_game(sgf).unwrap();
+        let opts = AnalysisOptions {
+            max_visits: Some(10),
+            two_pass: true,
+            deep_visits: Some(20),
+            human_profile: Some("rank_10k".into()),
+            human_profile_target: Some("rank_3k".into()),
+            ..Default::default()
+        };
+        let mut progress_calls = 0;
+        let a = analyze_game(&engine, game, opts, CancellationToken::new(), None, |_, _, _| progress_calls += 1).await.expect("analysis");
+        assert_eq!(a.turns.len(), 21);
+        assert!(progress_calls > 21, "two-pass and target pass report progress");
+        assert!(!a.deepened.is_empty());
+        assert_eq!(a.student, Some(Color::Black), "White's name looks like an engine");
+        assert!(a.reviews.iter().all(|r| r.human_prob.is_some() && r.target_prob.is_some()));
+        assert!(a.reviews[2].time_spent.is_some());
+        assert!(!a.openings.is_empty(), "19x19 game has corner patterns");
+        assert_eq!(a.phases.len(), 3);
+        let md = crate::report::render_markdown(&a);
+        for needle in ["Report format: 4", "## Teaching candidates", "## Game arc facts", "## Opening patterns", "### Time and loss", "## Appendix"] {
+            assert!(md.contains(needle), "report lacks {}", needle);
+        }
+        let json = serde_json::to_string(&a).unwrap();
+        let back: GameAnalysis = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.turns.len(), 21);
+        engine.shutdown();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn rules_mapping() {

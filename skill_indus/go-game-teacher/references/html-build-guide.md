@@ -15,6 +15,10 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
   },
   "result": "W+48.5",
   "overall_feedback": "2-3 paragraphs of stylistic feedback about the player's game. What they do well, what their main weakness is, what phase needs the most work.",
+  "progress": {
+    "summary": "Optional, only when the report has a 'Compared with the student's earlier games' section: 1-2 sentences on the trend.",
+    "rows": [{"metric": "Mean point loss per move", "this_game": "3.70", "recent_average": "4.20"}]
+  },
   "game_arc": {
     "intro": "1-2 sentences framing the game's overall story: what kind of game it was and where it was decided.",
     "phases": [
@@ -56,6 +60,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
       "player_color": "B",
       "played_quality": "big mistake",
       "theme": "life and death",
+      "level_framing": "At 10k this move is played 30% of the time; at 3k almost never — a 3k plays D4 (60%) because it saves the D3 stones first.",
       "refutation": ["F2", "D8", "G2", "C4"],
       "refutation_explanation": "2-3 sentences walking the numbered punishment: after 1 (F2) the D3 stones have one liberty; 3 (G2) captures them...",
       "better_line": ["D4", "G4", "C4", "E2"],
@@ -113,6 +118,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 **Top level:**
 - `game_title`, `players`, `result` — from the parsed JSON
 - `overall_feedback` — your stylistic assessment (2-3 paragraphs)
+- `progress` — optional top-level object: `summary` text and `rows` (`metric`, `this_game`, `recent_average`) copied from the parsed `history.metrics`. Rendered as a "Your Progress" card after the game arc. Omit when the report has no history section.
 - `game_arc` — required: the phase-by-phase narrative. An object with `intro` (1–2 sentences) and `phases`, one entry each for the phases the game actually had (typically Opening / Middle game / Endgame — a very short game may warrant only two, or even one). Each entry: `phase` (display name), `move_range` (e.g. "1–14"), `narrative` (2–4 sentences; blank-line-separated paragraphs allowed), and optional `turning_points` (array of short move-tagged notes). Rendered as a "How the Game Unfolded" section between the Game Overview and the lessons, with one card per phase and turning points as a bulleted list. The generator skips the section only when the field is missing (backwards compatibility with lesson JSON written before this field existed) — never rely on that. Follow the arc methodology and board-fact discipline in `references/game-arc-commentary.md`.
 - `lessons` — array of 2-3 lesson objects
 - `good_moves` — array of 1-3 moves the player played well (shown before puzzles)
@@ -121,6 +127,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 
 **Lesson object:**
 - `theme` — the candidate's theme from the report (shown as a badge next to the concept label).
+- `level_framing` — optional: the human-policy comparison ("At your level" callout above the principle). Use the report's human and target-profile numbers; omit when neither exists.
 - `refutation` — the opponent's punishing sequence after the played move, opponent first, GTP coordinates (copy the report's `refutation`, 4–8 moves). Rendered by the **What it allows** button: the board shows the played move (red circle) and then the sequence with numbered stones. `refutation_explanation` is the text shown with it; refer to the stone numbers.
 - `better_line` — KataGo's line after the preferred move, mover first (copy `better_line`). Rendered by the **Better line** button with numbered stones and `variation_explanation` as its text.
 - `player_color` — "B" or "W": the student's colour for this lesson. Optional: when omitted the generator uses the colour of that move in the parsed move list, then `game_info.student`. Set it explicitly when the student is White.

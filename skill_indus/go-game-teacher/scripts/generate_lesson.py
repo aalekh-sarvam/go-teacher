@@ -566,6 +566,11 @@ footer { text-align: center; padding: 20px; color: #999; font-size: 0.85em; }
 .turning-points { margin: 8px 0 0 18px; }
 .turning-points li { margin-bottom: 4px; font-size: 0.92em; color: #555; }
 .lesson-story { margin-bottom: 14px; padding: 10px 14px; background: #f0f4f8; border-radius: 6px; border-left: 3px solid #5a7a9a; }
+.level-framing { margin-top: 12px; padding: 10px 14px; background: #f6f0fa; border-radius: 6px; border-left: 3px solid #8a6aa8; }
+.level-framing .story-label { font-weight: 700; color: #4a3a6a; display: block; margin-bottom: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
+.progress-table { border-collapse: collapse; margin-top: 10px; }
+.progress-table th, .progress-table td { border: 1px solid #e0d5c0; padding: 5px 10px; text-align: left; font-size: 0.92em; }
+.progress-table th { background: #f5edd5; }
 .lesson-story .story-label { font-weight: 700; color: #3a4a5a; display: block; margin-bottom: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
 .overview-text p { margin-bottom: 12px; }
 @media (max-width: 700px) {
@@ -634,6 +639,18 @@ def build_arc_section(game_arc):
     return ('<section class="arc-section">'
             '<h2>How the Game Unfolded</h2>'
             f'{intro_html}{cards}</section>')
+
+
+def build_progress_section(progress):
+    """'Your progress' card from lesson_data['progress'] (text + optional rows), or ''."""
+    if not progress or not (progress.get('summary') or progress.get('rows')):
+        return ''
+    rows = ''
+    for r in progress.get('rows', []):
+        rows += f"<tr><td>{escape_html(str(r.get('metric', '')))}</td><td>{escape_html(str(r.get('this_game', '')))}</td><td>{escape_html(str(r.get('recent_average', '')))}</td></tr>"
+    table = f'<table class="progress-table"><thead><tr><th>Metric</th><th>This game</th><th>Recent average</th></tr></thead><tbody>{rows}</tbody></table>' if rows else ''
+    return ('<section class="progress"><h2>Your Progress</h2>'
+            + format_paragraphs(progress.get('summary', '')) + table + '</section>')
 
 
 def build_story_html(lesson):
@@ -729,6 +746,7 @@ def generate_html(parsed_data, lesson_data):
       <div class="explanation" id="explanation-{i}">
         <p class="hint-text">Click "Show played move" to see what you played, or "Show better move" to see KataGo's recommendation.</p>
       </div>
+      {('<div class="level-framing"><span class="story-label">At your level</span>' + format_paragraphs(lesson['level_framing']) + '</div>') if lesson.get('level_framing') else ''}
       <div class="principle">
         <strong>Key principle:</strong> {escape_html(lesson['principle'])}
       </div>
@@ -880,6 +898,7 @@ def generate_html(parsed_data, lesson_data):
 
     # Game arc (phase-by-phase narrative) — skipped if absent
     arc_section = build_arc_section(lesson_data.get('game_arc'))
+    progress_section = build_progress_section(lesson_data.get('progress'))
 
     # Game title
     title = escape_html(lesson_data.get('game_title', 'Go Game Review'))
@@ -915,6 +934,8 @@ def generate_html(parsed_data, lesson_data):
 </section>
 
 {arc_section}
+
+{progress_section}
 
 {''.join(lesson_sections)}
 

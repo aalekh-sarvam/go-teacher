@@ -29,6 +29,16 @@ The default output is *brief*: game info, summary statistics, the **teaching can
 
 `game_info.two_pass` tells you whether key positions were re-analysed deeply; `move_details[n].deep` marks those moves. Deep numbers are the reliable ones: when a deep and a shallow figure disagree, quote the deep one.
 
+Format 4 adds four optional blocks the parser exposes when present: `openings` (how each corner was played, with KataGo's first deviation), `history` (this game against the student's earlier games), `time_and_loss` plus per-move `time_spent_seconds` (when the record has clocks), and the target-profile human policy (`target_policy` on candidates, `target_policy_*` on moves).
+
+### 1a. Validate before generating
+
+```
+python <sandbox_dir>/scripts/validate_lesson.py <parsed.json> <lesson.json>
+```
+
+Run this on every lesson JSON before step 7. It checks that lesson moves exist and were played by the stated colour, that every coordinate is legal and on an empty point (alternatives, refutations, better lines, puzzle stones, correct and wrong moves, punishment sequences), that no puzzle reuses a game position, and that every wrong move has an explanation. Fix every PROBLEM line; read the warnings.
+
 Add `--full` only if you need the candidate table or diagram of a move outside the shortlist (for example an opponent blunder you want to mention). Do not read the whole markdown into context; if you need one move, search the markdown for `### Move N:`.
 
 ### 2. Identify the student
@@ -49,6 +59,8 @@ Start from `teaching.candidates`. The program has already ranked the student's m
 - `refutation` and `refutation_score`: the opponent's strongest punishment after the played move (opponent moves first) and where it leads. This is *what the mistake allows* — the core of a "why it's wrong" explanation. `better_line` is KataGo's continuation after the preferred move.
 - `status_changes`: groups whose life-and-death status this move changed (alive → dead, dead → alive, → captured), from the ownership maps. A move that kills your own group is a life-and-death lesson regardless of anything else.
 - `chain_before` / `chain_after`: the moves played in the same area shortly before and after, each with its point loss and notes (captured at N, status changes). This is the raw material for the cause→effect story in step 3a.
+- `target_policy` (when a stronger target profile was chosen): how often players two stones stronger play this move and what they play instead. Together with `human_policy` it gives the level framing directly: "common at your level, but a 5k plays D4 here 60% of the time".
+- `time_spent_seconds` and `fast` (when the record has clocks): a fast blunder is a discipline lesson ("stop and count liberties"), a slow one is a knowledge lesson.
 
 Pick 2–3 candidates with distinct themes (see `references/go-teaching-concepts.md`); prefer candidates with a non-empty `refutation` and a clear `theme`. Fall back to `summary.biggest_mistakes` filtered by `player` only if fewer than two candidates exist.
 
@@ -59,6 +71,9 @@ Before writing anything, follow `references/game-arc-commentary.md` to build the
 - **Segment the game into phases** — the report does this for you: `arc.phases` gives each phase's move range, Black's winrate and the score at both ends, mean loss per side, the worst move per side, the student's top-1 rate, and the *hot regions* where ownership changed most. `arc.status_changes` lists every group that was killed, saved or captured, by move. Write 2–4 sentences per phase from these numbers: what each side was trying to do, the one or two moves that mattered most, and how the balance shifted.
 - **Trace a cause→effect chain around every shortlisted move** — start from the candidate's `chain_before` and `chain_after` (moves in the same area with their losses and notes), its `status_changes`, `captured_at` and `refutation`. Backward: which earlier move in the chain set up the problem (the mistake is rarely the first error in its chain). Forward: what the refutation shows the move allowing, and what actually happened in the chain ("the atari at 23 was answered too late; by 27 the group had to sacrifice two stones, and that sacrifice made White's centre thick — which is why the 31 invasion failed"). Only the moves listed in the chains and the status table are safe to cite as connected; do not invent links between distant moves.
 - **Map each phase and chain onto a named pattern** — playing under strong stones, premature invasion, urgent-before-big, ladder direction — and carry those names into step 4's searches.
+- **Use `openings` for the opening phase.** Each corner comes with a summary such as "4-4 point, small knight's approach, 3-3 invasion" and the first move KataGo disliked there. Research that exact pattern (step 4) and let the opening phase narrative say which corner went wrong and how. When a teaching candidate is a corner's `first_deviation`, the lesson is a joseki/direction lesson: explain the standard idea and why the deviation costs points.
+- **Use `history` for the overview.** When present it has the student's numbers for this game against their recent average, the recurring themes across games, and the past games list. Open `overall_feedback` with the trend ("your opening loss is down from 4.1 to 2.3 over five games; reading mistakes remain the recurring theme") and put the table into `progress` (see html-build-guide). Do not invent trends when `history` is absent.
+- **Use `time_and_loss` when present**: if fast moves lose clearly more than slow ones, make "slow down at the critical moments" a stated habit in the overview, with the numbers.
 
 Every arc claim obeys Board-fact discipline (below): only report captures, atari and liberties the report supports.
 
@@ -84,7 +99,7 @@ For each chosen mistake write:
 - **The variation**: walk through KataGo's `better_line` (the same as `preferred_pv`) and explain the significant moves in `variation_explanation`; copy the line into `better_line` so the "Better line" button can play it.
 - **Life and death**: when `status_changes` says a group died or was captured because of this move, say so in plain words with the group's anchor point and stone count, and make the lesson about the status of that group.
 - **Graded alternatives**: from the move's candidate table (`candidates`, with `loss_vs_best`), take 2–4 other moves a beginner might consider and write one or two sentences each on *why* it is worse (or nearly as good). Set `loss_vs_best` and `quality` (best / good / inaccuracy / mistake / big mistake / blunder, thresholds 0.5 / 1.5 / 3 / 6 / 12 points). Include the played move's own quality as `played_quality`. The HTML shows each alternative on the board with a colour for its quality and a "Show all candidates" overlay.
-- **Level framing**: when human-policy numbers exist, say whether this is a common move at the student's level and what a stronger player would do instead ("a 5k plays this 30% of the time; a 1d almost always plays D4 because ...").
+- **Level framing**: when human-policy numbers exist, say whether this is a common move at the student's level and what a stronger player would do instead, and put it in the lesson's `level_framing` field (rendered as an "At your level" callout). Prefer the target-profile numbers when they exist: "at 10k this move is played 30% of the time; at 3k almost never — a 3k plays D4 (60%) because ...".
 - **The principle**: one sentence the student can remember, phrased as a habit.
 
 Also write the arc and summary content:
@@ -93,6 +108,7 @@ Also write the arc and summary content:
 - **The game arc** (`game_arc`): a short `intro` plus one entry per phase (opening / middle game / endgame) with `phase`, `move_range`, a `narrative` of 2–4 sentences, and optional `turning_points` (short move-tagged notes). This is the holistic commentary — how the strategic balance swung, not a move-by-move list. Follow `references/game-arc-commentary.md` on voice and board-fact discipline.
 - **The lesson story** (`story` on each lesson): 2–4 sentences tracing the cause→effect chain around that move — how the position arose and what the mistake led to, anchored in move numbers taken from `chain_before`, `chain_after` and `status_changes`. Keep it distinct from `explanation` (the tactical why) — the story is the context.
 - **Theme**: copy the candidate's `theme` into the lesson's `theme` field (shown as a badge) and choose `concept` / `concept_label` to match it.
+- **Progress** (`progress`, optional): when `history` exists, a `summary` paragraph on the trend and `rows` copied from `history.metrics` (`metric`, `this_game`, `recent_average`). Rendered as a "Your Progress" card after the game arc.
 
 ### 5a. Highlight moves played well
 
@@ -107,6 +123,9 @@ For each lesson concept, design 1–2 puzzles. Rules:
 - **One concept, one clear best move.** Verify the position is coherent: no overlapping stones, no stones off the board, the correct move is on an empty point, groups you call "in atari" really have one liberty, the opponent's last move is a stone that is on the board.
 - **Graded wrong moves with punishments.** List 2–3 tempting wrong moves in `wrong_moves`, each with `quality`, an estimated `loss_vs_best`, an explanation of *why it falls short*, and a `refutation`: the opponent's 1–4 reply moves that punish it, as GTP coordinates on the puzzle board. When the student clicks a wrong move the HTML plays that punishment with numbered stones, which is far more convincing than a sentence. Model the punishments on the lesson's `refutation`: the puzzle should fail for the same *reason* the game move failed, in a different shape. Also give `generic_wrong_explanation` for clicks that hit none of them. Verify every refutation move lands on an empty point of the puzzle position after the wrong move.
 - **Life-and-death puzzles.** When a lesson's theme is life and death, build the puzzle around a group that lives or dies with one move, and use the `status_changes` vocabulary ("this group has one eye; find the move that makes the second").
+- **Opening puzzles.** When the lesson comes from an `openings` first deviation, the puzzle is a corner position from the same pattern family (found in research) transformed to another corner or colour, asking for the standard move; wrong moves are the deviation and one other tempting mistake, with their punishments.
+- **Time-pressure puzzles.** When the student's fast moves lose more, add a "count first" puzzle: a capturing race or atari sequence where the obvious quick move loses and the answer needs one more liberty counted. Say in the hint that the point is to slow down.
+- **Validate.** Run `scripts/validate_lesson.py` (step 1a) and fix every problem before generating.
 - Include `opponent_last_move` so the student has context, a `hint`, and an `explanation` of the correct move.
 
 Keep positions simple enough to read out mentally: 9x9 or a corner/side fragment of a larger board.
@@ -117,7 +136,7 @@ One `concepts_learned` entry per concept: English term, Japanese term with kanji
 
 ### 7. Generate the HTML
 
-Write the lesson JSON following `references/html-build-guide.md`. Before generating, check that `game_arc` is present with at least one phase and that every lesson has a non-empty `story` — the generator will silently skip missing arc content, and the lesson is incomplete without it. Then:
+Write the lesson JSON following `references/html-build-guide.md`. Run the validator (step 1a); it also checks that `game_arc` has phases and every lesson has a `story`. Then:
 
 ```
 python <sandbox_dir>/scripts/generate_lesson.py <parsed.json> <lesson.json> <output.html>

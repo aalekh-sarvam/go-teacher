@@ -23,6 +23,7 @@ tao = "0.37"
 wry = "0.57"
 muda = "0.20"
 flate2 = "1"
+url = "2"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 
 [profile.release]

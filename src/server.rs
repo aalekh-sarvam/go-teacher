@@ -23,7 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 const INDEX_HTML: &str = include_str!("../static/index.html");
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
     Queued,
@@ -33,7 +33,7 @@ pub enum JobState {
     Cancelled,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct JobSummary {
     pub moves: usize,
     pub black: String,
@@ -83,6 +83,14 @@ pub struct Job {
     pub created_at: String,
     pub max_visits: Option<u64>,
     pub human_profile: Option<String>,
+    #[serde(default)]
+    pub human_profile_target: Option<String>,
+    #[serde(default)]
+    pub student: Option<Color>,
+    #[serde(default)]
+    pub two_pass: bool,
+    #[serde(default)]
+    pub deep_visits: Option<u64>,
     pub state: JobState,
     #[serde(skip)]
     pub cancel: CancellationToken,
@@ -97,6 +105,170 @@ pub struct Job {
     /// Number of positions analysed so far (also available while running).
     pub turns_done: usize,
     pub turns_total: usize,
+    /// Positions analysed so far (kept so a cancelled or failed run can resume).
+    #[serde(skip)]
+    pub partial: Vec<Option<TurnEval>>,
+    #[serde(skip)]
+    pub attempts: u32,
+    #[serde(skip)]
+    pub last_access: Option<std::time::Instant>,
+    /// True when the position data was dropped from memory and must be reloaded from the JSON dump.
+    #[serde(skip)]
+    pub spilled: bool,
+}
+
+impl Job {
+    fn touch(&mut self) {
+        self.last_access = Some(std::time::Instant::now());
+    }
+
+    fn paths(&self) -> Option<(String, String)> {
+        match &self.state {
+            JobState::Done { report_path, json_path, .. } => Some((report_path.clone(), json_path.clone())),
+            _ => None,
+        }
+    }
+}
+
+/// Persisted form of the job list (finished jobs only; running ones cannot survive a restart).
+#[derive(Serialize, serde::Deserialize)]
+struct SavedJob {
+    id: u64,
+    file_name: String,
+    created_at: String,
+    max_visits: Option<u64>,
+    human_profile: Option<String>,
+    #[serde(default)]
+    student: Option<Color>,
+    #[serde(default)]
+    two_pass: bool,
+    #[serde(default)]
+    deep_visits: Option<u64>,
+    state: serde_json::Value,
+    turns_total: usize,
+}
+
+pub fn persist_jobs(s: &AppState) {
+    let jobs = s.jobs.lock().unwrap();
+    let saved: Vec<SavedJob> = jobs
+        .values()
+        .filter(|j| matches!(j.state, JobState::Done { .. } | JobState::Failed { .. } | JobState::Cancelled))
+        .map(|j| SavedJob {
+            id: j.id,
+            file_name: j.file_name.clone(),
+            created_at: j.created_at.clone(),
+            max_visits: j.max_visits,
+            human_profile: j.human_profile.clone(),
+            student: j.student,
+            two_pass: j.two_pass,
+            deep_visits: j.deep_visits,
+            state: serde_json::to_value(&j.state).unwrap_or(serde_json::Value::Null),
+            turns_total: j.turns_total,
+        })
+        .collect();
+    let path = s.settings_path.with_file_name("jobs.json");
+    if let Ok(text) = serde_json::to_string(&saved) {
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Recreate finished jobs from jobs.json; position data is loaded lazily from the JSON dumps.
+pub fn restore_jobs(s: &AppState) {
+    let path = s.settings_path.with_file_name("jobs.json");
+    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    let Ok(saved) = serde_json::from_str::<Vec<SavedJob>>(&text) else { return };
+    let mut jobs = s.jobs.lock().unwrap();
+    let mut max_id = *s.next_job.lock().unwrap();
+    let mut kept = 0;
+    for sj in saved.into_iter().rev().take(50) {
+        let Ok(state) = serde_json::from_value::<JobState>(sj.state.clone()) else { continue };
+        if let JobState::Done { json_path, .. } = &state {
+            if !std::path::Path::new(json_path).is_file() {
+                continue; // the dump was deleted; nothing to show
+            }
+        }
+        max_id = max_id.max(sj.id);
+        jobs.insert(
+            sj.id,
+            Job {
+                id: sj.id,
+                file_name: sj.file_name,
+                created_at: sj.created_at,
+                max_visits: sj.max_visits,
+                human_profile: sj.human_profile,
+                human_profile_target: None,
+                student: sj.student,
+                two_pass: sj.two_pass,
+                deep_visits: sj.deep_visits,
+                state,
+                cancel: CancellationToken::new(),
+                markdown: None,
+                json: None,
+                game: Arc::new(GameRecord::default()),
+                live: Vec::new(),
+                turns_done: sj.turns_total,
+                turns_total: sj.turns_total,
+                partial: Vec::new(),
+                attempts: 0,
+                last_access: None,
+                spilled: true,
+            },
+        );
+        kept += 1;
+    }
+    *s.next_job.lock().unwrap() = max_id;
+    tracing::info!("restored {} finished jobs from {}", kept, path.display());
+}
+
+/// Load position data for a spilled or restored Done job from its JSON dump.
+fn ensure_loaded(s: &AppState, id: u64) {
+    let json_path = {
+        let mut jobs = s.jobs.lock().unwrap();
+        let Some(j) = jobs.get_mut(&id) else { return };
+        j.touch();
+        if !j.spilled {
+            return;
+        }
+        match j.paths() {
+            Some((_, jp)) => jp,
+            None => return,
+        }
+    };
+    let Ok(bytes) = std::fs::read(&json_path) else { return };
+    let Ok(analysis) = serde_json::from_slice::<GameAnalysis>(&bytes) else { return };
+    let md_path = std::path::Path::new(&json_path).with_extension("md");
+    let md = std::fs::read_to_string(&md_path).unwrap_or_else(|_| render_markdown(&analysis));
+    let mut jobs = s.jobs.lock().unwrap();
+    if let Some(j) = jobs.get_mut(&id) {
+        j.game = Arc::new(analysis.game.clone());
+        j.live = analysis.turns.iter().map(|t| Some(LiveTurn::from(t))).collect();
+        j.markdown = Some(Arc::new(md));
+        j.turns_total = analysis.turns.len();
+        j.turns_done = analysis.turns.len();
+        j.spilled = false;
+    }
+}
+
+/// Drop position data of finished jobs nobody has looked at for a while (reloaded on demand).
+pub fn spill_idle_jobs(s: &AppState, idle: std::time::Duration) {
+    let mut jobs = s.jobs.lock().unwrap();
+    for j in jobs.values_mut() {
+        if !matches!(j.state, JobState::Done { .. }) || j.spilled || j.paths().is_none() {
+            continue;
+        }
+        let idle_for = j.last_access.map(|t| t.elapsed()).unwrap_or(idle);
+        if idle_for >= idle {
+            j.live = Vec::new();
+            j.markdown = None;
+            j.json = None;
+            j.partial = Vec::new();
+            j.game = Arc::new(GameRecord::default());
+            j.spilled = true;
+        }
+    }
 }
 
 pub enum EngineState {
@@ -123,6 +295,200 @@ pub struct AppState {
     pub shutdown: CancellationToken,
     /// Jobs run one at a time so a batch of uploads finishes in order; others wait as Queued.
     pub job_slots: Arc<tokio::sync::Semaphore>,
+    /// Output of the last `katago benchmark` run, and whether it is still running.
+    pub benchmark: Mutex<(bool, String)>,
+}
+
+#[derive(serde::Deserialize)]
+struct ExploreRequest {
+    turn: usize,
+    /// Extra moves (GTP) played after `turn`, alternating colours from the side to move.
+    #[serde(default)]
+    moves: Vec<String>,
+    #[serde(default)]
+    visits: Option<u64>,
+}
+
+/// Analyse a hypothetical continuation from a position of a job's game: one KataGo query,
+/// outside the job queue (single position, seconds).
+async fn explore(State(s): State<Shared>, Path(id): Path<u64>, Json(req): Json<ExploreRequest>) -> Response {
+    ensure_loaded(&s, id);
+    let Some(engine) = s.engine() else { return (StatusCode::SERVICE_UNAVAILABLE, "KataGo is not running").into_response() };
+    let (game, human) = {
+        let jobs = s.jobs.lock().unwrap();
+        let Some(j) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
+        (j.game.clone(), j.human_profile.clone())
+    };
+    if req.turn > game.moves.len() || req.moves.len() > 40 {
+        return (StatusCode::BAD_REQUEST, "bad turn or too many moves").into_response();
+    }
+    // Build a game record truncated at `turn` plus the variation.
+    let mut g = (*game).clone();
+    g.moves.truncate(req.turn);
+    let mut color = g.moves.last().map(|m| m.color.opponent()).unwrap_or(g.who_moves_first());
+    if req.turn == 0 {
+        color = g.who_moves_first();
+    }
+    for mv in &req.moves {
+        let point = if mv == "pass" {
+            None
+        } else {
+            match crate::sgf::Coord::from_gtp(mv, g.size_y) {
+                Some(c) => Some(c),
+                None => return (StatusCode::BAD_REQUEST, format!("bad coordinate {}", mv)).into_response(),
+            }
+        };
+        g.moves.push(crate::sgf::Move { color, point, comment: None, time_left: None });
+        color = color.opponent();
+    }
+    let opts = AnalysisOptions { max_visits: Some(req.visits.unwrap_or(400).min(5000)), human_profile: human, ..Default::default() };
+    let rules = crate::analysis::katago_rules(g.rules.as_deref());
+    let komi = g.komi.unwrap_or_else(|| crate::analysis::default_komi(&rules));
+    let last = g.moves.len();
+    match crate::analysis::analyze_positions(&engine, &g, &rules, komi, &opts, &[last]).await {
+        Ok(mut turns) if !turns.is_empty() => {
+            let t = turns.remove(0);
+            let mut board = Board::new(g.size_x, g.size_y);
+            for c in &g.setup_black {
+                board.set(*c, Some(Color::Black));
+            }
+            for c in &g.setup_white {
+                board.set(*c, Some(Color::White));
+            }
+            for m in &g.moves {
+                if let Some(p) = m.point {
+                    board.play(m.color, p);
+                }
+            }
+            let rows: Vec<String> = (0..g.size_y)
+                .map(|y| (0..g.size_x).map(|x| match board.get(crate::sgf::Coord { x, y }) { Some(Color::Black) => 'X', Some(Color::White) => 'O', None => '.' }).collect())
+                .collect();
+            let last_move = g.moves.last().map(|m| serde_json::json!({"color": m.color, "move": m.point.map(|p| p.to_gtp(g.size_y)).unwrap_or_else(|| "pass".into())}));
+            Json(serde_json::json!({
+                "turn": req.turn, "variation": req.moves, "size_x": g.size_x, "size_y": g.size_y,
+                "board": rows, "last_move": last_move, "next_move": serde_json::Value::Null,
+                "eval": LiveTurn::from(&t),
+            }))
+            .into_response()
+        }
+        Ok(_) => (StatusCode::INTERNAL_SERVER_ERROR, "no result").into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
+}
+
+/// Run `katago benchmark` (6 positions at 300 visits) in the background.
+async fn benchmark_start(State(s): State<Shared>) -> Response {
+    {
+        let running = s.jobs.lock().unwrap().values().any(|j| matches!(j.state, JobState::Running { .. } | JobState::Queued));
+        if running {
+            return (StatusCode::CONFLICT, "analysis jobs are running; benchmark later").into_response();
+        }
+        let mut b = s.benchmark.lock().unwrap();
+        if b.0 {
+            return (StatusCode::CONFLICT, "benchmark already running").into_response();
+        }
+        *b = (true, String::new());
+    }
+    let cfg = s.engine_config.read().unwrap().clone();
+    let st = s.clone();
+    let bench_cfg = s.settings_path.with_file_name("benchmark.cfg");
+    tokio::task::spawn_blocking(move || {
+        // `katago benchmark` needs GTP-style keys (numSearchThreads); derive a benchmark config
+        // from the analysis config, keeping its backend/device settings.
+        let base = std::fs::read_to_string(&cfg.config).unwrap_or_default();
+        let per_thread = base
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("numSearchThreadsPerAnalysisThread").and_then(|r| r.trim().trim_start_matches('=').trim().split_whitespace().next()).and_then(|v| v.parse::<u32>().ok()))
+            .unwrap_or(4);
+        let analysis_threads = base
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("numAnalysisThreads").and_then(|r| r.trim().trim_start_matches('=').trim().split_whitespace().next()).and_then(|v| v.parse::<u32>().ok()))
+            .unwrap_or(2);
+        let threads = (per_thread * analysis_threads).clamp(1, 64);
+        let filtered: Vec<&str> = base.lines().filter(|l| !l.trim_start().starts_with("numSearchThreads ") && !l.trim_start().starts_with("numSearchThreads=")).collect();
+        let text = format!("{}\nnumSearchThreads = {}\n", filtered.join("\n"), threads);
+        if std::fs::write(&bench_cfg, text).is_err() {
+            *st.benchmark.lock().unwrap() = (false, "could not write benchmark config".into());
+            return;
+        }
+        let out = std::process::Command::new(&cfg.katago)
+            .args(["benchmark", "-model"])
+            .arg(&cfg.model)
+            .arg("-config")
+            .arg(&bench_cfg)
+            .args(["-v", "300", "-n", "6", "-t"])
+            .arg(threads.to_string())
+            .output();
+        let text = match out {
+            Ok(o) => {
+                let mut t = String::from_utf8_lossy(&o.stdout).to_string();
+                if !o.status.success() {
+                    t.push_str(&String::from_utf8_lossy(&o.stderr));
+                }
+                t
+            }
+            Err(e) => format!("could not run katago benchmark: {}", e),
+        };
+        // Keep the informative lines only.
+        let summary: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("visits/s") || l.contains("backend") || l.contains("Model name") || l.contains("numSearchThreads") || l.contains("nnEvals") || l.contains("Ordered summary") || l.contains("Elo") || l.contains("Error") || l.contains("error"))
+            .collect();
+        let result = if summary.is_empty() { text.chars().rev().take(1500).collect::<String>().chars().rev().collect() } else { summary.join("\n") };
+        *st.benchmark.lock().unwrap() = (false, result);
+    });
+    StatusCode::ACCEPTED.into_response()
+}
+
+async fn benchmark_status(State(s): State<Shared>) -> Json<serde_json::Value> {
+    let b = s.benchmark.lock().unwrap();
+    Json(serde_json::json!({ "running": b.0, "output": b.1 }))
+}
+
+/// Zip the report, the JSON dump and (when the skill folder is configured) the parsed JSON the
+/// skill's parser produces, then reveal the zip in Finder.
+async fn lesson_bundle(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    let Some((md, json)) = ({
+        let jobs = s.jobs.lock().unwrap();
+        jobs.get(&id).and_then(|j| j.paths())
+    }) else { return (StatusCode::CONFLICT, "report not ready").into_response() };
+    let md_path = PathBuf::from(&md);
+    let stem = md_path.file_stem().map(|x| x.to_string_lossy().to_string()).unwrap_or_else(|| "report".into());
+    let dir = s.out_dir.join(format!("{}_bundle", stem));
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    let _ = std::fs::copy(&md, dir.join("report.md"));
+    let _ = std::fs::copy(&json, dir.join("analysis.json"));
+    let mut notes = vec!["report.md: the go_teacher review (the only input the lesson skill needs)".to_string(), "analysis.json: full per-position data".to_string()];
+    if let Some(skill) = crate::load_settings().skill_dir.filter(|d| d.join("scripts/parse_review.py").is_file()) {
+        let out = std::process::Command::new("python3")
+            .arg(skill.join("scripts/parse_review.py"))
+            .arg(dir.join("report.md"))
+            .arg(dir.join("parsed.json"))
+            .output();
+        match out {
+            Ok(o) if o.status.success() => notes.push("parsed.json: output of the skill's parse_review.py (brief)".into()),
+            Ok(o) => notes.push(format!("parse_review.py failed: {}", String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => notes.push(format!("could not run parse_review.py: {}", e)),
+        }
+        let _ = std::fs::copy(skill.join("SKILL.md"), dir.join("SKILL.md"));
+    } else {
+        notes.push("set the lesson skill folder in Engine settings to include parsed.json and SKILL.md".into());
+    }
+    let _ = std::fs::write(dir.join("README.txt"), format!("Go Teacher lesson bundle\n\n{}\n\nUpload report.md (or the whole zip) to your teaching agent with the go-game-teacher skill.\n", notes.join("\n")));
+    let zip_path = s.out_dir.join(format!("{}_bundle.zip", stem));
+    let _ = std::fs::remove_file(&zip_path);
+    let status = std::process::Command::new("zip").arg("-q").arg("-r").arg(&zip_path).arg(dir.file_name().unwrap()).current_dir(&s.out_dir).status();
+    let _ = std::fs::remove_dir_all(&dir);
+    match status {
+        Ok(st) if st.success() => {
+            let _ = std::process::Command::new("open").arg("-R").arg(&zip_path).status();
+            (StatusCode::OK, format!("Lesson bundle written to {}\n{}", zip_path.display(), notes.join("\n"))).into_response()
+        }
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "zip failed").into_response(),
+    }
 }
 
 type Shared = Arc<AppState>;
@@ -151,6 +517,10 @@ pub fn router(state: Shared) -> Router {
         .route("/api/jobs/:id", get(get_job))
         .route("/api/jobs/:id/cancel", post(cancel_job))
         .route("/api/jobs/cancel-all", post(cancel_all))
+        .route("/api/jobs/:id/resume", post(resume_job))
+        .route("/api/jobs/:id/explore", post(explore))
+        .route("/api/jobs/:id/lesson-bundle", post(lesson_bundle))
+        .route("/api/engine/benchmark", get(benchmark_status).post(benchmark_start))
         .route("/api/jobs/:id/report.md", get(report_md))
         .route("/api/jobs/:id/report.json", get(report_json))
         .route("/api/jobs/:id/live", get(live_summary))
@@ -223,11 +593,17 @@ async fn get_settings(State(s): State<Shared>) -> Json<serde_json::Value> {
 async fn save_settings(State(s): State<Shared>, Json(body): Json<serde_json::Value>) -> Response {
     let mut saved = crate::load_settings();
     let mut problems = Vec::new();
+    if let Some(v) = body.get("watch_human_profile") {
+        let t = v.as_str().unwrap_or("").trim().to_string();
+        saved.watch_human_profile = if t.is_empty() || !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') { None } else { Some(t) };
+    }
     for (key, slot) in [
         ("katago", &mut saved.katago),
         ("model", &mut saved.model),
         ("config", &mut saved.config),
         ("human_model", &mut saved.human_model),
+        ("watch_dir", &mut saved.watch_dir),
+        ("skill_dir", &mut saved.skill_dir),
     ] {
         if let Some(v) = body.get(key) {
             let t = v.as_str().unwrap_or("").trim();
@@ -451,6 +827,14 @@ async fn load_file(State(s): State<Shared>, Path(name): Path<String>) -> Respons
         live: analysis.turns.iter().map(|t| Some(LiveTurn::from(t))).collect(),
         turns_done: analysis.turns.len(),
         turns_total: analysis.turns.len(),
+        student: analysis.student,
+        human_profile_target: analysis.options.human_profile_target.clone(),
+        two_pass: analysis.options.two_pass,
+        deep_visits: analysis.options.deep_visits,
+        partial: Vec::new(),
+        attempts: 0,
+        last_access: Some(std::time::Instant::now()),
+        spilled: false,
     };
     s.jobs.lock().unwrap().insert(id, job);
     Json(serde_json::json!({ "job_id": id })).into_response()
@@ -458,6 +842,7 @@ async fn load_file(State(s): State<Shared>, Path(name): Path<String>) -> Respons
 
 /// Which turns have been analysed so far.
 async fn live_summary(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    ensure_loaded(&s, id);
     let jobs = s.jobs.lock().unwrap();
     let Some(j) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
     let done: Vec<usize> = j.live.iter().enumerate().filter_map(|(i, t)| t.as_ref().map(|_| i)).collect();
@@ -494,6 +879,7 @@ async fn live_summary(State(s): State<Shared>, Path(id): Path<u64>) -> Response 
 
 /// Board position after `turn` moves plus KataGo's evaluation of it (if analysed yet).
 async fn live_turn(State(s): State<Shared>, Path((id, turn)): Path<(u64, usize)>) -> Response {
+    ensure_loaded(&s, id);
     let (game, eval) = {
         let jobs = s.jobs.lock().unwrap();
         let Some(j) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
@@ -547,6 +933,7 @@ async fn live_turn(State(s): State<Shared>, Path((id, turn)): Path<(u64, usize)>
 
 /// The finished report rendered as HTML.
 async fn report_page(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    ensure_loaded(&s, id);
     let (md, name) = {
         let jobs = s.jobs.lock().unwrap();
         let Some(j) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
@@ -597,7 +984,13 @@ fn serve_text(job: Option<&Job>, pick: fn(&Job) -> Option<Arc<String>>, mime: &s
         Some(j) => j,
         None => return (StatusCode::NOT_FOUND, "no such job").into_response(),
     };
-    match pick(job) {
+    // Spilled jobs: read the file from disk instead.
+    let from_disk = if pick(job).is_none() {
+        job.paths().and_then(|(md, js)| std::fs::read_to_string(if ext == "json" { js } else { md }).ok()).map(Arc::new)
+    } else {
+        None
+    };
+    match pick(job).or(from_disk) {
         Some(text) => {
             let base = sanitize(&job.file_name);
             let disposition = if inline {
@@ -658,6 +1051,7 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
     let mut student: Option<Color> = None;
     let mut two_pass = false;
     let mut deep_visits: Option<u64> = None;
+    let mut human_profile_target: Option<String> = None;
     let mut submitted: Vec<(String, Vec<u8>)> = Vec::new();
 
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -674,6 +1068,14 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
                         }
                     }
                     Err(e) => return (StatusCode::BAD_REQUEST, format!("upload failed: {}", e)).into_response(),
+                }
+            }
+            "human_profile_target" => {
+                if let Ok(t) = field.text().await {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && s.engine_config.read().unwrap().human_model.is_some() {
+                        human_profile_target = Some(t);
+                    }
                 }
             }
             "two_pass" => {
@@ -742,7 +1144,7 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
 
     let mut ids = Vec::new();
     for (name, bytes) in submitted {
-        match start_job(&s, name, bytes, max_visits, human_profile.clone(), student, two_pass, deep_visits) {
+        match start_job(&s, name, bytes, max_visits, human_profile.clone(), student, two_pass, deep_visits, human_profile_target.clone()) {
             Ok(id) => ids.push(id),
             Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
         }
@@ -750,8 +1152,10 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
     Json(serde_json::json!({ "job_ids": ids })).into_response()
 }
 
-pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Option<u64>, human_profile: Option<String>, student: Option<Color>, two_pass: bool, deep_visits: Option<u64>) -> Result<u64> {
-    let engine = s.engine().ok_or_else(|| anyhow::anyhow!("KataGo is not running"))?;
+pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Option<u64>, human_profile: Option<String>, student: Option<Color>, two_pass: bool, deep_visits: Option<u64>, human_profile_target: Option<String>) -> Result<u64> {
+    if s.engine().is_none() {
+        anyhow::bail!("KataGo is not running");
+    }
     let text = String::from_utf8_lossy(&bytes).to_string();
     let game = parse_game(&text).map_err(|e| anyhow::anyhow!("{}: {}", file_name, e))?;
 
@@ -761,84 +1165,248 @@ pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Opti
         *n
     };
     let cancel = CancellationToken::new();
+    let n = game.moves.len();
     let job = Job {
         id,
         file_name: file_name.clone(),
         created_at: chrono::Local::now().to_rfc3339(),
         max_visits,
         human_profile: human_profile.clone(),
+        human_profile_target,
+        student,
+        two_pass,
+        deep_visits,
         state: JobState::Queued,
         cancel: cancel.clone(),
         markdown: None,
         json: None,
-        game: Arc::new(game.clone()),
-        live: vec![None; game.moves.len() + 1],
+        game: Arc::new(game),
+        live: vec![None; n + 1],
         turns_done: 0,
-        turns_total: game.moves.len() + 1,
+        turns_total: n + 1,
+        partial: vec![None; n + 1],
+        attempts: 0,
+        last_access: Some(std::time::Instant::now()),
+        spilled: false,
     };
     s.jobs.lock().unwrap().insert(id, job);
+    spawn_job_task(s.clone(), id);
+    Ok(id)
+}
 
-    let state = s.clone();
+/// Wait until the engine is Ready (it may be restarting after a crash). Gives up after `secs`.
+async fn wait_for_engine(state: &Shared, secs: u64, cancel: &CancellationToken) -> Option<Arc<Engine>> {
+    for _ in 0..secs {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        if let Some(e) = state.engine() {
+            if e.is_alive() {
+                return Some(e);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    None
+}
+
+/// Run (or re-run) a job: queue for a slot, analyse, retry once if the engine died mid-way.
+fn spawn_job_task(state: Shared, id: u64) {
     tokio::spawn(async move {
-        // Wait for a slot; cancelling while queued just marks the job cancelled.
+        let (cancel, game, opts, file_name) = {
+            let mut jobs = state.jobs.lock().unwrap();
+            let Some(j) = jobs.get_mut(&id) else { return };
+            j.cancel = CancellationToken::new();
+            j.state = JobState::Queued;
+            (
+                j.cancel.clone(),
+                j.game.clone(),
+                AnalysisOptions {
+                    max_visits: j.max_visits,
+                    human_profile: j.human_profile.clone(),
+                    human_profile_target: j.human_profile_target.clone(),
+                    student: j.student,
+                    two_pass: j.two_pass,
+                    deep_visits: j.deep_visits,
+                    ..Default::default()
+                },
+                j.file_name.clone(),
+            )
+        };
         let permit = tokio::select! {
             p = state.job_slots.clone().acquire_owned() => p,
             _ = cancel.cancelled() => {
                 if let Some(j) = state.jobs.lock().unwrap().get_mut(&id) {
                     j.state = JobState::Cancelled;
                 }
+                persist_jobs(&state);
                 return;
             }
         };
         let Ok(_permit) = permit else { return };
-        let opts = AnalysisOptions {
-            max_visits,
-            human_profile,
-            student,
-            two_pass,
-            deep_visits,
-            ..Default::default()
-        };
-        let st = state.clone();
-        let progress = move |done: usize, total: usize, turn: Option<&TurnEval>| {
-            if let Some(j) = st.jobs.lock().unwrap().get_mut(&id) {
-                j.state = JobState::Running { done, total };
-                j.turns_done = done;
-                j.turns_total = total;
-                if let Some(t) = turn {
-                    if let Some(slot) = j.live.get_mut(t.turn) {
-                        *slot = Some(LiveTurn::from(t));
+
+        loop {
+            let Some(engine) = wait_for_engine(&state, 240, &cancel).await else {
+                let mut jobs = state.jobs.lock().unwrap();
+                if let Some(j) = jobs.get_mut(&id) {
+                    j.state = if cancel.is_cancelled() { JobState::Cancelled } else { JobState::Failed { error: "KataGo is not running".into() } };
+                }
+                drop(jobs);
+                persist_jobs(&state);
+                return;
+            };
+            let resume = {
+                let jobs = state.jobs.lock().unwrap();
+                jobs.get(&id).map(|j| j.partial.clone())
+            };
+            let st = state.clone();
+            let progress = move |done: usize, total: usize, turn: Option<&TurnEval>| {
+                if let Some(j) = st.jobs.lock().unwrap().get_mut(&id) {
+                    j.state = JobState::Running { done, total };
+                    j.turns_done = done;
+                    j.turns_total = total;
+                    if let Some(t) = turn {
+                        if let Some(slot) = j.live.get_mut(t.turn) {
+                            *slot = Some(LiveTurn::from(t));
+                        }
+                        if let Some(slot) = j.partial.get_mut(t.turn) {
+                            if slot.is_none() {
+                                *slot = Some(t.clone());
+                            }
+                        }
+                    }
+                }
+            };
+            let result = analyze_game(&engine, (*game).clone(), opts.clone(), cancel.clone(), resume, progress).await;
+            let engine_died = !engine.is_alive();
+            let retry = {
+                let mut jobs = state.jobs.lock().unwrap();
+                let Some(job) = jobs.get_mut(&id) else { return };
+                match result {
+                    Ok(analysis) => {
+                        match finish(&state.out_dir, &file_name, &analysis) {
+                            Ok((md, json, md_path, json_path)) => {
+                                job.markdown = Some(Arc::new(md));
+                                job.json = Some(Arc::new(json));
+                                job.partial = Vec::new();
+                                job.state = JobState::Done { report_path: md_path, json_path, summary: summarize(&analysis) };
+                                crate::progress::record(&state.out_dir, &analysis);
+                            }
+                            Err(e) => job.state = JobState::Failed { error: e.to_string() },
+                        }
+                        false
+                    }
+                    Err(e) if cancel.is_cancelled() => {
+                        tracing::info!("job {} cancelled: {}", id, e);
+                        job.state = JobState::Cancelled;
+                        false
+                    }
+                    Err(e) if engine_died && job.attempts < 1 => {
+                        job.attempts += 1;
+                        tracing::warn!("job {}: engine died ({}); waiting for restart and resuming", id, e);
+                        job.state = JobState::Queued;
+                        true
+                    }
+                    Err(e) => {
+                        job.state = JobState::Failed { error: format!("{} (positions kept; use Resume)", e) };
+                        false
+                    }
+                }
+            };
+            if retry {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                continue;
+            }
+            persist_jobs(&state);
+            return;
+        }
+    });
+}
+
+/// Resume a cancelled or failed job from the positions it already analysed.
+async fn resume_job(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
+    {
+        let mut jobs = s.jobs.lock().unwrap();
+        let Some(j) = jobs.get_mut(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
+        if !matches!(j.state, JobState::Cancelled | JobState::Failed { .. }) {
+            return (StatusCode::CONFLICT, "only cancelled or failed jobs can be resumed").into_response();
+        }
+        if j.spilled || j.game.moves.is_empty() && j.turns_total > 1 {
+            return (StatusCode::CONFLICT, "this job was restored from disk and cannot be resumed; upload the game again").into_response();
+        }
+        j.attempts = 0;
+        if j.partial.len() != j.game.moves.len() + 1 {
+            j.partial = vec![None; j.game.moves.len() + 1];
+        }
+    }
+    if s.engine().is_none() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "KataGo is not running").into_response();
+    }
+    spawn_job_task(s.clone(), id);
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// Queue SGF files dropped on the window or opened from Finder, with the saved defaults.
+pub fn queue_files(s: &Shared, paths: Vec<PathBuf>) -> Vec<u64> {
+    let settings = crate::load_settings();
+    let mut ids = Vec::new();
+    for p in paths {
+        if !p.extension().map_or(false, |e| e.eq_ignore_ascii_case("sgf")) {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&p) else { continue };
+        let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "game.sgf".into());
+        let profile = settings.watch_human_profile.clone().filter(|x| !x.is_empty() && s.engine_config.read().unwrap().human_model.is_some());
+        match start_job(s, name, bytes, None, profile, None, true, None, None) {
+            Ok(id) => ids.push(id),
+            Err(e) => tracing::warn!("cannot queue {}: {}", p.display(), e),
+        }
+    }
+    ids
+}
+
+/// Poll the configured watch folder for new SGF files every 10 seconds.
+pub async fn watch_folder_task(state: Shared) {
+    let seen_path = state.settings_path.with_file_name("watched.json");
+    let mut seen: std::collections::HashSet<String> = std::fs::read_to_string(&seen_path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default();
+    let mut first = true;
+    loop {
+        if state.shutdown.is_cancelled() {
+            return;
+        }
+        let dir = crate::load_settings().watch_dir;
+        if let Some(dir) = dir.filter(|d| d.is_dir()) {
+            let mut new_files: Vec<PathBuf> = Vec::new();
+            if let Ok(rd) = std::fs::read_dir(&dir) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if !p.extension().map_or(false, |x| x.eq_ignore_ascii_case("sgf")) {
+                        continue;
+                    }
+                    let key = p.display().to_string();
+                    if seen.insert(key) && !first {
+                        new_files.push(p);
                     }
                 }
             }
-        };
-        let result = analyze_game(&engine, game, opts, cancel.clone(), progress).await;
-        let mut jobs = state.jobs.lock().unwrap();
-        let job = match jobs.get_mut(&id) {
-            Some(j) => j,
-            None => return,
-        };
-        match result {
-            Ok(analysis) => match finish(&state.out_dir, &file_name, &analysis) {
-                Ok((md, json, md_path, json_path)) => {
-                    job.markdown = Some(Arc::new(md));
-                    job.json = Some(Arc::new(json));
-                    job.state = JobState::Done {
-                        report_path: md_path,
-                        json_path,
-                        summary: summarize(&analysis),
-                    };
-                }
-                Err(e) => job.state = JobState::Failed { error: e.to_string() },
-            },
-            Err(e) if cancel.is_cancelled() => {
-                tracing::info!("job {} cancelled: {}", id, e);
-                job.state = JobState::Cancelled;
+            if first {
+                // Existing files are not analysed retroactively; only files that appear from now on.
+                first = false;
             }
-            Err(e) => job.state = JobState::Failed { error: e.to_string() },
+            new_files.sort();
+            if !new_files.is_empty() && state.engine().is_some() {
+                let ids = queue_files(&state, new_files);
+                tracing::info!("watch folder: queued {} game(s)", ids.len());
+            }
+            if let Ok(t) = serde_json::to_string(&seen) {
+                let _ = std::fs::write(&seen_path, t);
+            }
         }
-    });
-    Ok(id)
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
 }
 
 pub fn write_outputs(out_dir: &std::path::Path, base: &str, analysis: &GameAnalysis) -> Result<(String, String, PathBuf, PathBuf)> {
@@ -856,7 +1424,12 @@ pub fn write_outputs(out_dir: &std::path::Path, base: &str, analysis: &GameAnaly
 fn finish(out_dir: &std::path::Path, file_name: &str, analysis: &GameAnalysis) -> Result<(String, String, String, String)> {
     let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let base = format!("{}_{}", stamp, sanitize(file_name));
-    let (md, json, md_path, json_path) = write_outputs(out_dir, &base, analysis)?;
+    let mut analysis = analysis.clone();
+    analysis.history = crate::progress::history_for(out_dir, &analysis);
+    if analysis.game.game_name.is_none() {
+        analysis.game.game_name = Some(sanitize(file_name));
+    }
+    let (md, json, md_path, json_path) = write_outputs(out_dir, &base, &analysis)?;
     tracing::info!("wrote {}", md_path.display());
     Ok((md, json, md_path.display().to_string(), json_path.display().to_string()))
 }

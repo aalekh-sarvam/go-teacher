@@ -25,12 +25,49 @@ const CSS: &str = r#"
   .toc { font-size:13px; color:var(--muted); }
 "#;
 
+/// Turn "Move N" mentions in headings and bullets into links that open the position in the live board.
+fn link_moves(markdown: &str, job_id: u64) -> String {
+    let mut out = String::with_capacity(markdown.len() + 1024);
+    let mut in_code = false;
+    for line in markdown.lines() {
+        if line.starts_with("```") {
+            in_code = !in_code;
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        if in_code {
+            out.push_str(line);
+            out.push('\n');
+            continue;
+        }
+        let mut l = line.to_string();
+        // "### Move 15: Black G4" and "### Candidate: move 15 (Black G4)"
+        for prefix in ["### Move ", "### Candidate: move ", "- **Move "] {
+            if let Some(rest) = l.strip_prefix(prefix) {
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if !digits.is_empty() {
+                    let tail = &rest[digits.len()..];
+                    let (open, close) = if prefix == "- **Move " { ("- **", "**") } else { (prefix, "") };
+                    let tail = if prefix == "- **Move " { tail.strip_prefix("**").unwrap_or(tail) } else { tail };
+                    l = format!("{}[Move {}](/?job={}&turn={}){}{}", open.trim_end_matches("Move ").trim_end_matches("move "), digits, job_id, digits, close, tail);
+                }
+                break;
+            }
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
 pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_SMART_PUNCTUATION);
-    let parser = Parser::new_ext(markdown, opts);
+    let linked = link_moves(markdown, job_id);
+    let parser = Parser::new_ext(&linked, opts);
     let mut body = String::with_capacity(markdown.len() * 2);
     html::push_html(&mut body, parser);
     let title = format!("Review of {}", html_escape(file_name));
@@ -39,6 +76,7 @@ pub fn render_page(file_name: &str, markdown: &str, job_id: u64) -> String {
 <title>{title}</title><style>{CSS}</style></head><body>\
 <nav><a href=\"/\">&larr; Go Teacher</a><span class=\"toc\">{title}</span>\
 <span style=\"flex:1\"></span>\
+<a href=\"/api/jobs/{job_id}/lesson-bundle\" onclick=\"fetch(this.href,{{method:'POST'}}).then(r=>r.text()).then(t=>alert(t));return false;\">lesson bundle</a>\
 <a href=\"/api/jobs/{job_id}/report.md?inline=1\">raw Markdown</a></nav>\
 <main>{body}</main></body></html>"
     )

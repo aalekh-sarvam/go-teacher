@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 /// Bump when the structure of the report changes; the lesson skill's parser checks it.
-pub const REPORT_FORMAT: u32 = 3;
+pub const REPORT_FORMAT: u32 = 4;
 
 fn pct(x: f64) -> String {
     format!("{:.1}%", x * 100.0)
@@ -250,6 +250,9 @@ a high human policy with a large loss means a typical mistake for the level, a l
     let _ = writeln!(w, "- **Theme** is a rule-based classification of each teaching candidate (reading, life and death, tenuki, over-defending, shape, endgame, direction). \
 **What the move allows** is the opponent's strongest punishment after the played move, taken from the analysis of the next position; **Better line** is KataGo's continuation after its preferred move. \
 **Chain** lists the moves played in the same area shortly before and after, with their losses, so a lesson can explain how the position arose and what the mistake led to.");
+    let _ = writeln!(w, "- **Opening patterns** names how each corner was played (corner point, approach, invasion) with KataGo's verdict per move; \
+**Compared with the student's earlier games** appears once the student has two or more earlier analysed games. **Time spent** lines appear when the record has clock data. \
+**Target profile** numbers are the human-style policy at a stronger rank chosen at upload.");
     let _ = writeln!(w, "- **Game arc facts** gives per-phase numbers (winrate and score at the phase boundaries, mean loss per side, worst move per side, where the board changed most) \
 and every life-and-death change detected from the ownership maps, as material for a phase-by-phase narrative.");
     let _ = writeln!(w, "- Only the key moves (teaching candidates, losses of 2+ points, praised moves, the last move) have full entries with a candidate table and diagram; \
@@ -325,6 +328,25 @@ Recorded result: {}.\n",
         }
     }
     let _ = writeln!(w);
+
+    // time and loss (when the record has clocks)
+    let timed: Vec<&MoveReview> = a.reviews.iter().filter(|r| r.time_spent.is_some()).collect();
+    if timed.len() >= 8 {
+        let mut secs: Vec<f64> = timed.iter().map(|r| r.time_spent.unwrap()).collect();
+        secs.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let median = secs[secs.len() / 2];
+        let _ = writeln!(w, "### Time and loss\n");
+        let _ = writeln!(w, "The record has clock data. Moves are split at the median thinking time ({:.0} s).\n", median);
+        let _ = writeln!(w, "| Player | Fast moves (≤ median) | Mean loss | Slow moves | Mean loss |");
+        let _ = writeln!(w, "|---|---|---|---|---|");
+        for color in [C::Black, C::White] {
+            let fast: Vec<&&MoveReview> = timed.iter().filter(|r| r.color == color && r.time_spent.unwrap() <= median).collect();
+            let slow: Vec<&&MoveReview> = timed.iter().filter(|r| r.color == color && r.time_spent.unwrap() > median).collect();
+            let mean = |v: &[&&MoveReview]| if v.is_empty() { 0.0 } else { v.iter().map(|r| r.point_loss.max(0.0)).sum::<f64>() / v.len() as f64 };
+            let _ = writeln!(w, "| {} | {} | {:.2} | {} | {:.2} |", color.name(), fast.len(), mean(&fast), slow.len(), mean(&slow));
+        }
+        let _ = writeln!(w);
+    }
 
     // biggest mistakes
     let _ = writeln!(w, "### Biggest mistakes\n");
@@ -654,12 +676,22 @@ Every other move is one line: loss, KataGo's rank of the move, then Black's winr
                 );
             }
         }
+        if let Some(secs) = r.time_spent {
+            let _ = writeln!(w, "- Time spent on this move: {:.0} s.", secs);
+        }
         if let (Some(p), Some(k)) = (r.policy_prob, r.policy_rank) {
             let mut line = format!("- Network policy for {}: {} (#{} over the whole board).", r.mv, prob(p), k);
             if let (Some(hp), Some(hk)) = (r.human_prob, r.human_rank) {
                 line.push_str(&format!(" Human policy: {} (#{})", prob(hp), hk));
                 if let (Some(t), Some(tp)) = (&r.human_top, r.human_top_prob) {
                     line.push_str(&format!(", most common human move {} ({:.0}%)", t, tp * 100.0));
+                }
+                line.push('.');
+            }
+            if let (Some(tp), Some(tk)) = (r.target_prob, r.target_rank) {
+                line.push_str(&format!(" Target profile: {} (#{})", prob(tp), tk));
+                if let (Some(t), Some(pp)) = (&r.target_top, r.target_top_prob) {
+                    line.push_str(&format!(", most common move {} ({:.0}%)", t, pp * 100.0));
                 }
                 line.push('.');
             }
@@ -693,6 +725,83 @@ Every other move is one line: loss, KataGo's rank of the move, then Black's winr
     }
 
     if in_brief_list {
+        let _ = writeln!(w);
+    }
+
+    // --------------------------------------------------------- openings + history
+    if !a.openings.is_empty() {
+        let _ = writeln!(w, "## Opening patterns\n");
+        let _ = writeln!(w, "How each corner was played (first 50 moves), described from the stones and judged by KataGo. \
+Use the summary names to research the pattern; the first deviation is the first corner move KataGo disliked by 1.5+ points.\n");
+        for c in &a.openings {
+            let _ = writeln!(w, "### {} corner: {}\n", c.corner, c.summary);
+            for m in &c.moves {
+                let _ = writeln!(
+                    w,
+                    "- Move {} {} {}: {} (loss {}, {})",
+                    m.number,
+                    m.color.name(),
+                    m.mv,
+                    m.description,
+                    one_dec(m.point_loss),
+                    match m.rank {
+                        Some(0) => "KataGo's choice".to_string(),
+                        Some(k) => format!("KataGo's #{}", k + 1),
+                        None => "not searched".to_string(),
+                    }
+                );
+            }
+            match &c.first_deviation {
+                Some((n, mv, best, loss)) => {
+                    let _ = writeln!(w, "\nFirst deviation: move {} {} (KataGo preferred {}, {:.1} points).\n", n, mv, best, loss);
+                }
+                None => {
+                    let _ = writeln!(w, "\nNo move in this corner lost 1.5 points or more.\n");
+                }
+            }
+        }
+    }
+    if a.history.len() >= 2 {
+        let _ = writeln!(w, "## Compared with the student's earlier games\n");
+        let me = crate::progress::entry_for(a);
+        let recent: Vec<&crate::progress::GameEntry> = a.history.iter().rev().take(10).collect();
+        let avg = |f: &dyn Fn(&crate::progress::GameEntry) -> f64| recent.iter().map(|e| f(e)).sum::<f64>() / recent.len() as f64;
+        let _ = writeln!(w, "The student has {} earlier analysed games; averages below are over the last {}.\n", a.history.len(), recent.len());
+        let _ = writeln!(w, "| Metric | This game | Recent average |");
+        let _ = writeln!(w, "|---|---|---|");
+        let _ = writeln!(w, "| Mean point loss per move | {:.2} | {:.2} |", me.mean_loss, avg(&|e| e.mean_loss));
+        let _ = writeln!(w, "| Opening mean loss | {:.2} | {:.2} |", me.opening_loss, avg(&|e| e.opening_loss));
+        let _ = writeln!(w, "| Middlegame mean loss | {:.2} | {:.2} |", me.middlegame_loss, avg(&|e| e.middlegame_loss));
+        let _ = writeln!(w, "| Endgame mean loss | {:.2} | {:.2} |", me.endgame_loss, avg(&|e| e.endgame_loss));
+        let _ = writeln!(w, "| Matched KataGo's top choice | {:.0}% | {:.0}% |", me.top1_rate * 100.0, avg(&|e| e.top1_rate) * 100.0);
+        let _ = writeln!(w, "| Moves losing 3+ points | {} | {:.1} |", me.mistakes, avg(&|e| e.mistakes as f64));
+        let _ = writeln!(w);
+        let mut theme_totals: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for e in &recent {
+            for (k, v) in &e.themes {
+                *theme_totals.entry(k.clone()).or_insert(0) += v;
+            }
+        }
+        if !theme_totals.is_empty() {
+            let mut tv: Vec<(String, usize)> = theme_totals.into_iter().collect();
+            tv.sort_by(|x, y| y.1.cmp(&x.1));
+            let list: Vec<String> = tv.iter().take(4).map(|(k, v)| format!("{} ({})", k, v)).collect();
+            let _ = writeln!(w, "Recurring themes in recent games (teaching candidates per theme): {}.\n", list.join(", "));
+        }
+        let _ = writeln!(w, "| Game | Date | Opponent | Result | Mean loss | Top-1 |");
+        let _ = writeln!(w, "|---|---|---|---|---|---|");
+        for e in recent.iter().rev() {
+            let _ = writeln!(
+                w,
+                "| {} | {} | {} | {} | {:.2} | {:.0}% |",
+                if e.file_stem.is_empty() { e.analysed_at.chars().take(10).collect::<String>() } else { e.file_stem.clone() },
+                e.date.as_deref().unwrap_or("—"),
+                e.opponent_name.as_deref().unwrap_or("—"),
+                e.result.as_deref().unwrap_or("—"),
+                e.mean_loss,
+                e.top1_rate * 100.0
+            );
+        }
         let _ = writeln!(w);
     }
 

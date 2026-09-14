@@ -66,6 +66,9 @@ pub struct Move {
     pub point: Option<Coord>,
     /// Comment attached to this move in the SGF, if any.
     pub comment: Option<String>,
+    /// Clock time left after the move (BL/WL), seconds.
+    #[serde(default)]
+    pub time_left: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -435,16 +438,18 @@ pub fn parse_game(input: &str) -> Result<GameRecord> {
     };
 
     let mut seen_move = false;
-    for (i, node) in nodes.iter().enumerate() {
+    'nodes: for (i, node) in nodes.iter().enumerate() {
         // Setup stones are only representable before the first move.
         for (key, list) in [("AB", &mut game.setup_black), ("AW", &mut game.setup_white)] {
             if let Some(vals) = node.get(key) {
                 if seen_move {
+                    // KataGo cannot represent stones added mid-game; analyse the record up to here.
                     game.warnings.push(format!(
-                        "node {} places setup stones ({}) after moves have been played; they were ignored",
-                        i, key
+                        "the record adds stones ({}) after move {}; analysis covers the moves before that point",
+                        key,
+                        game.moves.len()
                     ));
-                    continue;
+                    break 'nodes;
                 }
                 for v in vals {
                     // Compressed point lists "aa:cc" are allowed in FF[4].
@@ -463,7 +468,8 @@ pub fn parse_game(input: &str) -> Result<GameRecord> {
             }
         }
         if node.get("AE").is_some() {
-            game.warnings.push(format!("node {} removes stones (AE), which is not supported; ignored", i));
+            game.warnings.push(format!("the record removes stones (AE) after move {}; analysis covers the moves before that point", game.moves.len()));
+            break 'nodes;
         }
 
         let comment = node.first("C").and_then(clean);
@@ -475,10 +481,12 @@ pub fn parse_game(input: &str) -> Result<GameRecord> {
                     continue;
                 }
                 let point = parse_point(v, sx, sy)?;
+                let time_left = node.first(if color == Color::Black { "BL" } else { "WL" }).and_then(|t| t.trim().parse::<f64>().ok());
                 game.moves.push(Move {
                     color,
                     point,
                     comment: comment.clone(),
+                    time_left,
                 });
                 played = true;
                 seen_move = true;

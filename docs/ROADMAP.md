@@ -1,6 +1,6 @@
 # Go Teacher — improvement plan
 
-**Status (2026-09-14):** done — A1 two-pass, A2 refutation lines (from the next position's search, no extra query), A3 themes, A4 group status changes, B1 chart, C4 format version, plus per-phase arc facts and same-area move chains for the skill's game-arc narrative. Open — A5–A8, B2–B9, C1–C3, C5–C6. C7 (thread tuning) dropped: benchmarking already done by the user.
+**Status (2026-09-14, later):** everything below is implemented except C7 (thread tuning, dropped: the user has already benchmarked). Notes on deviations: A2 refutations come from the next position's search, so no extra query; A6 replaced the hand-written joseki database with engine-grounded "opening patterns" (corner point, approach and invasion names derived from the stones, plus KataGo's first deviation per corner), because a typed joseki list risks teaching wrong sequences; A8 runs the target profile as a one-visit pass over every position; C5 is wired through `CODESIGN_IDENTITY` / `NOTARY_PROFILE` environment variables but not exercised (needs a Developer ID); B6's file association is registered in Info.plist and handled via tao's `Event::Opened`.
 
 Ideas gathered after the first working version (September 2026), written so each one can be
 picked up later without re-deriving the reasoning. Items are grouped by what they buy, and each

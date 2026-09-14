@@ -87,8 +87,10 @@
       </label>
       <label class="small" id="humanlabel" hidden>Human policy profile
         <select id="human_profile"><option value="">off</option></select>
+        target (stronger) <select id="human_profile_target"><option value="">off</option></select>
       </label>
     </div>
+    <div id="dropzone" class="status" style="margin-top:8px;padding:10px;border:1px dashed var(--line);border-radius:8px;text-align:center">Or drop SGF files anywhere on this page. Double-clicking an SGF in Finder opens it here too.</div>
     <div id="banner" class="banner warn">Starting KataGo and loading the model… this can take a minute.</div>
     <div id="guide" class="guide" hidden>
       <h2 id="guidetitle">Set up the Go engine</h2>
@@ -127,11 +129,15 @@ katago version        # must print "Using Metal backend"</pre>
         <tr><th>Network (model)</th><td><input class="path" id="s_model" placeholder="automatic (KaTrain's network)"></td></tr>
         <tr><th>Analysis config</th><td><input class="path" id="s_config" placeholder="automatic (built-in config)"></td></tr>
         <tr><th>Human-style network</th><td><input class="path" id="s_human" placeholder="automatic (KaTrain's human-like model, if set)"></td></tr>
+        <tr><th>Watch folder</th><td><input class="path" id="s_watch" placeholder="optional: new .sgf files saved here are analysed automatically (e.g. KaTrain's save folder)"></td></tr>
+        <tr><th>Profile for watched games</th><td><input class="path" id="s_watch_profile" placeholder="optional human profile for dropped / watched games, e.g. rank_10k"></td></tr>
+        <tr><th>Lesson skill folder</th><td><input class="path" id="s_skill" placeholder="optional: folder of the go-game-teacher skill, used by 'lesson bundle'"></td></tr>
       </tbody>
     </table>
     <div class="row" style="margin-top:8px">
       <button class="small" onclick="saveSettings()">Save</button>
       <button class="small" onclick="clearSettings()">Reset to automatic</button>
+      <button class="small" onclick="runBenchmark()">Test engine speed (~30 s)</button>
       <span class="status" id="settingsmsg">Leave a field empty to detect automatically. Saving restarts the engine.</span>
     </div>
   </div>
@@ -156,6 +162,7 @@ katago version        # must print "Using Metal backend"</pre>
       <div>
         <svg id="board" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"></svg>
         <div class="legend" id="boardlegend"></div>
+        <div class="legend">Tip: with "follow" off, click an empty point to ask KataGo what happens after that move (variation exploration).</div>
       </div>
       <div>
         <table class="cands">
@@ -250,8 +257,9 @@ async function loadStatus() {
     $('v_human_label').hidden = !s.human_model;
     const hp = $('human_profile');
     if (s.human_model && hp.options.length <= 1) {
-      hp.innerHTML = '<option value="">off</option>' + s.human_profiles.map(p => '<option value="' + p + '">' + p.replace('rank_', '').replace('preaz_', 'pre-AZ ').replace('proyear_', 'pro ') + '</option>').join('');
-      try { hp.value = localStorage.getItem('gt_human_profile') || ''; } catch (e) {}
+      const opts = '<option value="">off</option>' + s.human_profiles.map(p => '<option value="' + p + '">' + p.replace('rank_', '').replace('preaz_', 'pre-AZ ').replace('proyear_', 'pro ') + '</option>').join('');
+      hp.innerHTML = opts; $('human_profile_target').innerHTML = opts;
+      try { hp.value = localStorage.getItem('gt_human_profile') || ''; $('human_profile_target').value = localStorage.getItem('gt_human_profile_target') || ''; } catch (e) {}
     }
   } catch (e) {
     $('banner').className = 'banner err'; $('banner').textContent = 'Server unreachable';
@@ -263,6 +271,7 @@ async function loadSettings() {
     const d = await (await fetch('/api/settings')).json();
     const sv = d.saved || {};
     $('s_katago').value = sv.katago || ''; $('s_model').value = sv.model || ''; $('s_config').value = sv.config || ''; $('s_human').value = sv.human_model || '';
+    $('s_watch').value = sv.watch_dir || ''; $('s_watch_profile').value = sv.watch_human_profile || ''; $('s_skill').value = sv.skill_dir || '';
     const a = d.active;
     $('enginesource').innerHTML = 'In use now — engine <code>' + esc(a.katago) + '</code>, network <code>' + esc(a.model) + '</code>, config <code>' + esc(a.config) + '</code>'
       + (a.human_model ? ', human network <code>' + esc(a.human_model) + '</code>' : ', no human network')
@@ -270,7 +279,8 @@ async function loadSettings() {
   } catch (e) {}
 }
 async function saveSettings() {
-  const body = { katago: $('s_katago').value, model: $('s_model').value, config: $('s_config').value, human_model: $('s_human').value };
+  const body = { katago: $('s_katago').value, model: $('s_model').value, config: $('s_config').value, human_model: $('s_human').value,
+    watch_dir: $('s_watch').value, watch_human_profile: $('s_watch_profile').value, skill_dir: $('s_skill').value };
   const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!r.ok) { $('settingsmsg').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; return; }
   $('settingsmsg').innerHTML = '<span class="ok">Saved.</span> Restarting the engine…';
@@ -283,8 +293,17 @@ async function retryEngine() {
   engineReady = false;
   setTimeout(() => { loadStatus(); loadSettings(); }, 800);
 }
+async function runBenchmark() {
+  const r = await fetch('/api/engine/benchmark', { method: 'POST' });
+  if (!r.ok) { $('settingsmsg').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; return; }
+  $('settingsmsg').textContent = 'Benchmarking (6 positions at 300 visits)…';
+  const poll = setInterval(async () => {
+    const d = await (await fetch('/api/engine/benchmark')).json();
+    if (!d.running) { clearInterval(poll); $('settingsmsg').innerHTML = '<pre style="white-space:pre-wrap;font-size:12px;margin:6px 0">' + esc(d.output || 'no output') + '</pre>'; }
+  }, 2000);
+}
 async function clearSettings() {
-  for (const id of ['s_katago', 's_model', 's_config', 's_human']) $(id).value = '';
+  for (const id of ['s_katago', 's_model', 's_config', 's_human', 's_watch', 's_watch_profile', 's_skill']) $(id).value = '';
   await saveSettings();
 }
 
@@ -305,6 +324,34 @@ async function quitApp() {
 }
 
 // ------------------------------------------------------------------- upload
+async function uploadFiles(files) {
+  if (!files || !files.length) return;
+  if (!engineReady) { $('message').innerHTML = '<span class="err">KataGo is not ready yet — wait for the green banner.</span>'; return; }
+  const fd = new FormData();
+  for (const f of files) fd.append('sgf', f, f.name);
+  fd.append('visits', $('visits').value);
+  fd.append('human_profile', $('human_profile').value);
+  fd.append('human_profile_target', $('human_profile_target').value);
+  fd.append('student', $('student').value);
+  fd.append('two_pass', $('two_pass').checked ? '1' : '0');
+  fd.append('deep_visits', $('deep_visits').value);
+  $('message').textContent = 'Uploading…';
+  try {
+    const r = await fetch('/api/analyze', { method: 'POST', body: fd });
+    if (!r.ok) { $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; return; }
+    const j = await r.json();
+    $('message').textContent = 'Queued ' + j.job_ids.length + ' game(s).';
+    view.job = j.job_ids[0]; view.follow = true; $('follow').checked = true;
+  } catch (e) { $('message').innerHTML = '<span class="err">' + esc(e) + '</span>'; }
+  loadJobs();
+}
+document.addEventListener('dragover', (e) => { e.preventDefault(); $('dropzone').style.borderColor = 'var(--accent)'; });
+document.addEventListener('dragleave', () => { $('dropzone').style.borderColor = 'var(--line)'; });
+document.addEventListener('drop', (e) => {
+  e.preventDefault(); $('dropzone').style.borderColor = 'var(--line)';
+  const files = Array.from(e.dataTransfer.files || []).filter(f => /\.sgf$/i.test(f.name));
+  uploadFiles(files);
+});
 $('file').addEventListener('change', async (ev) => {
   const files = ev.target.files;
   if (!files.length) return;
@@ -317,6 +364,8 @@ $('file').addEventListener('change', async (ev) => {
   for (const f of files) fd.append('sgf', f, f.name);
   fd.append('visits', $('visits').value);
   fd.append('human_profile', $('human_profile').value);
+  fd.append('human_profile_target', $('human_profile_target').value);
+  try { localStorage.setItem('gt_human_profile_target', $('human_profile_target').value); } catch (e) {}
   fd.append('student', $('student').value);
   fd.append('two_pass', $('two_pass').checked ? '1' : '0');
   fd.append('deep_visits', $('deep_visits').value);
@@ -339,6 +388,12 @@ $('file').addEventListener('change', async (ev) => {
   loadJobs();
 });
 
+async function resumeJob(id) {
+  const r = await fetch('/api/jobs/' + id + '/resume', { method: 'POST' });
+  if (!r.ok) $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>';
+  loadJobs();
+}
+
 async function cancel(id) {
   await fetch('/api/jobs/' + id + '/cancel', { method: 'POST' });
   loadJobs();
@@ -356,8 +411,8 @@ function statusCell(j) {
         + '<button class="linkbtn" onclick="cancel(' + j.id + ')">cancel</button>';
     }
     case 'done': return '<span class="ok">Done</span> <span class="status">(' + s.summary.elapsed_seconds.toFixed(0) + ' s)</span>';
-    case 'failed': return '<span class="err">Failed:</span> <span class="status">' + esc(s.error) + '</span>';
-    case 'cancelled': return 'Cancelled';
+    case 'failed': return '<span class="err">Failed:</span> <span class="status">' + esc(s.error) + '</span> <button class="linkbtn" style="color:var(--accent)" onclick="resumeJob(' + j.id + ')">resume</button>';
+    case 'cancelled': return 'Cancelled <button class="linkbtn" style="color:var(--accent)" onclick="resumeJob(' + j.id + ')">resume</button>';
   }
   return '';
 }
@@ -461,7 +516,7 @@ function updateLegend(t) {
 
 $('jobselect').addEventListener('change', (e) => { view.job = parseInt(e.target.value); view.lastKey = ''; refreshLive(); });
 $('follow').addEventListener('change', (e) => { view.follow = e.target.checked; refreshLive(); });
-$('turnslider').addEventListener('input', (e) => { view.turn = parseInt(e.target.value); view.follow = false; $('follow').checked = false; refreshLive(); });
+$('turnslider').addEventListener('input', (e) => { exploring.moves = []; view.turn = parseInt(e.target.value); view.follow = false; $('follow').checked = false; refreshLive(); });
 
 function gtpToXY(mv, sy) {
   if (!mv || mv === 'pass') return null;
@@ -487,8 +542,8 @@ function drawBoard(t) {
   for (let x = 0; x < sx; x++) s += `<line x1="${px(x)}" y1="${py(0)}" x2="${px(x)}" y2="${py(sy-1)}" stroke="#5a3c1e" stroke-width="1"/>`;
   for (let y = 0; y < sy; y++) s += `<line x1="${px(0)}" y1="${py(y)}" x2="${px(sx-1)}" y2="${py(y)}" stroke="#5a3c1e" stroke-width="1"/>`;
   // star points
-  const stars = (n) => n === 19 ? [3, 9, 15] : n === 13 ? [3, 6, 9] : n === 9 ? [2, 4, 6] : [];
-  for (const x of stars(sx)) for (const y of stars(sy)) s += `<circle cx="${px(x)}" cy="${py(y)}" r="3" fill="#5a3c1e"/>`;
+  const stars = (n) => n >= 15 ? [3, Math.floor(n / 2), n - 4] : n >= 11 ? [3, Math.floor(n / 2), n - 4] : n >= 7 ? [2, Math.floor(n / 2), n - 3] : [];
+  for (const x of stars(sx)) for (const y of stars(sy)) if ((sx % 2 === 1 || x !== Math.floor(sx / 2)) && (sy % 2 === 1 || y !== Math.floor(sy / 2))) s += `<circle cx="${px(x)}" cy="${py(y)}" r="3" fill="#5a3c1e"/>`;
   // coordinates
   for (let x = 0; x < sx; x++) s += `<text x="${px(x)}" y="${H-6}" font-size="10" text-anchor="middle" fill="#5a3c1e">${COLS[x]}</text>`;
   for (let y = 0; y < sy; y++) s += `<text x="8" y="${py(y)+3.5}" font-size="10" text-anchor="middle" fill="#5a3c1e">${sy-y}</text>`;
@@ -542,6 +597,15 @@ function drawBoard(t) {
   const svg = $('board');
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = s;
+  svg.onclick = (e) => {
+    if (view.follow) return;
+    const pt = svg.createSVGPoint(); pt.x = e.clientX; pt.y = e.clientY;
+    const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+    const x = Math.round((q.x - pad) / cell), y = Math.round((q.y - pad) / cell);
+    if (x < 0 || y < 0 || x >= sx || y >= sy) return;
+    if (t.board[y][x] !== '.') return;
+    explore(COLS[x] + (sy - y));
+  };
 }
 
 function drawCandidates(t) {
@@ -626,7 +690,25 @@ $('chart').addEventListener('click', (e) => {
   refreshLive();
 });
 
+// ---- variation exploration: ask KataGo about a continuation from the shown position
+const exploring = { moves: [] };
+async function explore(mv) {
+  exploring.moves.push(mv);
+  $('evalline').innerHTML = '<span class="status">Asking KataGo about ' + esc(exploring.moves.join(' ')) + '…</span>';
+  const r = await fetch('/api/jobs/' + view.job + '/explore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ turn: view.turn, moves: exploring.moves }) });
+  if (!r.ok) { $('evalline').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; exploring.moves.pop(); return; }
+  const t = await r.json();
+  view.lastKey = 'explore:' + exploring.moves.join(',');
+  drawBoard(t); drawCandidates(t); updateLegend(t);
+  const e = t.eval;
+  $('evalline').innerHTML = '<b>Variation from move ' + view.turn + ':</b> ' + esc(exploring.moves.join(' ')) + ' — ' + e.to_move + ' to play, Black winrate <b>' + fmtPct(e.winrate) + '</b>, score <b>' + lead(e.score_lead) + '</b> (' + e.visits + ' visits). '
+    + 'Click another empty point to continue, or <button class="linkbtn" style="color:var(--accent)" onclick="exploreBack()">back</button> <button class="linkbtn" onclick="exploreReset()">leave variation</button>';
+}
+function exploreBack() { exploring.moves.pop(); if (exploring.moves.length) { const m = exploring.moves.pop(); explore(m); } else exploreReset(); }
+function exploreReset() { exploring.moves = []; view.lastKey = ''; refreshLive(); }
+
 async function refreshLive() {
+  if (exploring.moves.length) return;
   if (view.job === null || $('livecard').hidden) return;
   try {
     const live = await (await fetch('/api/jobs/' + view.job + '/live')).json();
@@ -703,6 +785,7 @@ async function loadJson(name) {
 }
 
 // ------------------------------------------------------------------ polling
+(() => { const q = new URLSearchParams(location.search); if (q.get('job')) { view.job = parseInt(q.get('job')); view.turn = parseInt(q.get('turn') || '0'); view.follow = false; setTimeout(() => { $('follow').checked = false; $('livecard').scrollIntoView(); }, 300); } })();
 loadStatus();
 loadSettings();
 loadJobs().then(refreshLive);

@@ -550,6 +550,26 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     if let (Some(p), Some(k)) = (r.policy_prob, r.policy_rank) {
         hints.push(format!("KataGo's network gave the played move {} (its #{} choice before any search).", if p < 0.001 { "under 0.1%".to_string() } else { format!("{:.1}%", p * 100.0) }, k));
     }
+    if let Some(secs) = r.time_spent {
+        let fast: Vec<f64> = reviews.iter().filter_map(|x| x.time_spent).collect();
+        if fast.len() >= 8 {
+            let mut sorted = fast.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let q1 = sorted[sorted.len() / 4];
+            if secs <= q1 {
+                hints.push(format!("Played in {:.0} s, among the fastest quarter of the game's moves: likely not read out.", secs));
+            } else if secs >= sorted[sorted.len() * 3 / 4] {
+                hints.push(format!("Played after {:.0} s of thought, among the slowest quarter: a considered decision that still went wrong.", secs));
+            }
+        }
+    }
+    if let (Some(p), Some(k)) = (r.target_prob, r.target_rank) {
+        let top = match (&r.target_top, r.target_top_prob) {
+            (Some(t), Some(tp)) => format!("; their most common move here is {} ({:.0}%)", t, tp * 100.0),
+            _ => String::new(),
+        };
+        hints.push(format!("Players at the stronger target profile play this move {} of the time (#{}){}.", if p < 0.001 { "under 0.1%".to_string() } else { format!("{:.1}%", p * 100.0) }, k, top));
+    }
     if let (Some(p), Some(k)) = (r.human_prob, r.human_rank) {
         let top = match (&r.human_top, r.human_top_prob) {
             (Some(t), Some(tp)) => format!("; the most common move at that level is {} ({:.0}%)", t, tp * 100.0),

@@ -19,7 +19,13 @@ fn open_external(url: &str) {
 
 /// Show the UI at `url` in a native window and block forever. `shutdown` is cancelled when the
 /// app should quit (from the web UI, Ctrl-C, or the window); `on_quit` runs once before exit.
-pub fn run(url: String, shutdown: CancellationToken, runtime: tokio::runtime::Handle, on_quit: impl FnOnce() + 'static) -> ! {
+pub fn run(
+    url: String,
+    shutdown: CancellationToken,
+    runtime: tokio::runtime::Handle,
+    on_quit: impl FnOnce() + 'static,
+    on_files: std::sync::Arc<dyn Fn(Vec<std::path::PathBuf>) + Send + Sync>,
+) -> ! {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -87,8 +93,20 @@ pub fn run(url: String, shutdown: CancellationToken, runtime: tokio::runtime::Ha
         }));
     }
 
+    let files_cb = on_files.clone();
     let _webview = WebViewBuilder::new()
         .with_url(url)
+        // Files dropped on the window (.sgf) are queued natively; other drags fall through to the page.
+        .with_drag_drop_handler(move |e| {
+            if let wry::DragDropEvent::Drop { paths, .. } = e {
+                let sgf: Vec<std::path::PathBuf> = paths.into_iter().filter(|p| p.extension().map_or(false, |x| x.eq_ignore_ascii_case("sgf"))).collect();
+                if !sgf.is_empty() {
+                    files_cb(sgf);
+                    return true;
+                }
+            }
+            false
+        })
         // Links that want a new tab (none in windowed mode, but be safe) go to the system browser.
         .with_new_window_req_handler(|url, _features| {
             open_external(&url);
@@ -105,6 +123,13 @@ pub fn run(url: String, shutdown: CancellationToken, runtime: tokio::runtime::Ha
     let mut on_quit = Some(on_quit);
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
+        // Files opened from Finder (double-click, "Open with") while the app is running or starting.
+        if let Event::Opened { urls } = &event {
+            let paths: Vec<std::path::PathBuf> = urls.iter().filter_map(|u| u.to_file_path().ok()).collect();
+            if !paths.is_empty() {
+                on_files(paths);
+            }
+        }
         let quit = matches!(
             event,
             Event::WindowEvent {

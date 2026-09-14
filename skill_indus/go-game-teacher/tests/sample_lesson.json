@@ -1,0 +1,155 @@
+{
+ "game_title": "Sample",
+ "players": {
+  "black": "Student",
+  "white": "Teacher"
+ },
+ "result": "W+R",
+ "overall_feedback": "Overview paragraph.\n\nSecond paragraph.",
+ "progress": {
+  "summary": "Mean loss steady across the recent games.",
+  "rows": [
+   {
+    "metric": "Mean point loss per move",
+    "this_game": "3.68",
+    "recent_average": "3.69"
+   },
+   {
+    "metric": "Opening mean loss",
+    "this_game": "0.13",
+    "recent_average": "0.12"
+   },
+   {
+    "metric": "Middlegame mean loss",
+    "this_game": "2.00",
+    "recent_average": "1.96"
+   },
+   {
+    "metric": "Endgame mean loss",
+    "this_game": "10.61",
+    "recent_average": "10.72"
+   },
+   {
+    "metric": "Matched KataGo's top choice",
+    "this_game": "10%",
+    "recent_average": "5%"
+   },
+   {
+    "metric": "Moves losing 3+ points",
+    "this_game": "6",
+    "recent_average": "6.0"
+   }
+  ]
+ },
+ "game_arc": {
+  "intro": "A seesaw beginner game.",
+  "phases": [
+   {
+    "phase": "Opening",
+    "move_range": "1-16",
+    "narrative": "Both sides fought in the centre.",
+    "turning_points": [
+     "Move 15: the D3 stones died."
+    ]
+   }
+  ]
+ },
+ "lessons": [
+  {
+   "title": "Save the stones",
+   "concept": "life_and_death",
+   "concept_label": "Life and Death",
+   "theme": "direction of play",
+   "move_number": 23,
+   "played_move": "A19",
+   "preferred_move": "D3",
+   "player_color": "B",
+   "point_loss": 12.1,
+   "played_quality": "big mistake",
+   "story": "How we got here.",
+   "explanation": "Why it fails.",
+   "refutation": [
+    "M3",
+    "N3",
+    "E3",
+    "F4",
+    "M5"
+   ],
+   "refutation_explanation": "1 takes the liberty.",
+   "better_line": [
+    "D3",
+    "C3",
+    "C2",
+    "B3",
+    "E4",
+    "D2",
+    "E3",
+    "B2"
+   ],
+   "variation_explanation": "The better line.",
+   "level_framing": "Common at 20k.",
+   "principle": "Count liberties first.",
+   "alternatives": [
+    {
+     "move": "D3",
+     "loss_vs_best": 0.0,
+     "quality": "best",
+     "explanation": "Best."
+    }
+   ]
+  }
+ ],
+ "puzzles": [
+  {
+   "title": "Escape",
+   "concept": "life_and_death",
+   "concept_label": "Life and Death",
+   "board_size": 9,
+   "black_stones": [
+    "C3",
+    "D3",
+    "E4"
+   ],
+   "white_stones": [
+    "C4",
+    "D4",
+    "B3",
+    "E3"
+   ],
+   "opponent_last_move": "E3",
+   "player_to_move": "B",
+   "correct_moves": [
+    "D2"
+   ],
+   "hint": "Count liberties.",
+   "explanation": "D2 gives the group a second liberty.",
+   "wrong_moves": [
+    {
+     "move": "F3",
+     "quality": "blunder",
+     "loss_vs_best": 10,
+     "refutation": [
+      "D2"
+     ],
+     "explanation": "White captures at D2."
+    }
+   ],
+   "generic_wrong_explanation": "Look at the C3-D3 stones."
+  }
+ ],
+ "good_moves": [],
+ "concepts_learned": [
+  {
+   "term": "Liberty",
+   "japanese": "\u547c\u5438\u70b9 (Koky\u016bten)",
+   "description": "An empty point next to a group.",
+   "resources": [
+    {
+     "title": "Sensei's Library",
+     "url": "https://senseis.xmp.net/?Liberty"
+    }
+   ],
+   "anecdote": "Proverb: count liberties."
+  }
+ ]
+}

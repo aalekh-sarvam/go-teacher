@@ -63,6 +63,26 @@ with the same network the network is loaded twice and the two searches share the
 Teacher detects this and shows a notice; quit KaTrain, or let it finish its game, when you want
 full analysis speed.
 
+### Working with results
+
+- **Report viewer**: "view report" renders the Markdown; every "Move N" heading is a link that
+  opens that position in the live board.
+- **Variation exploration**: with "follow latest" off, click an empty point on the live board
+  to ask KataGo what happens after that move; keep clicking to go deeper, "back" to retract.
+- **Lesson bundle**: the report page's "lesson bundle" link zips the report, the JSON dump and,
+  if the lesson skill folder is set in Engine settings, the skill's parsed JSON and SKILL.md,
+  then reveals the zip in Finder for upload to your teaching agent.
+- **Resume**: a cancelled or failed analysis keeps the positions it finished; "resume" completes
+  the rest. If KataGo crashes mid-game, Go Teacher restarts it and resumes the job by itself.
+- **Persistence**: finished analyses reappear after a restart (loaded from their JSON dumps on
+  demand; idle ones are dropped from memory after ten minutes).
+- **Watch folder**: set a folder in Engine settings (KaTrain's save folder, an iPad sync folder)
+  and new `.sgf` files saved there are analysed automatically, with an optional human profile.
+- **Drag and drop / Finder**: drop SGF files on the window or the page, or double-click an SGF in
+  Finder and choose Go Teacher.
+- **Engine speed test**: "Test engine speed" in Engine settings runs `katago benchmark` for
+  20 seconds and shows the visits per second.
+
 ### Batches
 
 Upload several SGF files at once, or keep uploading while a game is being analysed: games run
@@ -75,7 +95,12 @@ go_teacher analyze ~/Documents/Go_games/            # every game in the folder, 
 
 ## Build from source
 
-Requires the Rust toolchain (`curl https://sh.rustup.rs -sSf | sh`).
+Requires the Rust toolchain (`curl https://sh.rustup.rs -sSf | sh`). `cargo test` runs the unit
+tests and an end-to-end test against a fake engine, so no GPU or model is needed.
+
+For a distributable DMG, sign and notarize with a Developer ID by setting
+`CODESIGN_IDENTITY="Developer ID Application: ..."` and `NOTARY_PROFILE=<keychain profile>`
+before running `./packaging/make_app.sh` (one-time setup: `xcrun notarytool store-credentials`).
 
 ```
 cargo build --release
@@ -129,7 +154,13 @@ puzzle-ready stone list, a rule-based **theme**, the opponent's strongest punish
 played move ("what the move allows"), KataGo's line after the better move, and the chain of
 moves played in the same area before and after. A **Game arc facts** section gives per-phase
 numbers and every life-and-death change detected from the ownership maps, as material for a
-phase-by-phase narrative; a list of "only good move" finds is included for praise. Only key moves
+phase-by-phase narrative; a list of "only good move" finds is included for praise. On 13x13
+and larger boards an **Opening patterns** section names how each corner was played and the
+first move KataGo disliked there. When the record has clock data, thinking time per move and a
+fast-versus-slow loss table appear. Once a student has two or more earlier analysed games, a
+**Compared with the student's earlier games** section shows trends (kept in `progress.json`
+in the reports folder). A second, stronger human profile ("target") can be chosen at upload to
+show what a player two stones stronger would do. Only key moves
 get a full entry with candidate table and diagram; every other move is one line, which keeps
 a full game to a few hundred lines.
 
@@ -150,6 +181,7 @@ Headless use, without a browser:
 ./target/release/go_teacher analyze ~/Documents/Go_games/          # a whole folder
 ./target/release/go_teacher analyze game.sgf --visits 200          # faster, weaker
 ./target/release/go_teacher analyze game.sgf --human-profile rank_5k  # add human policy maps
+./target/release/go_teacher analyze game.sgf --two-pass --human-profile rank_10k --human-profile-target rank_3k
 ```
 
 Options (all subcommands): `--katago`, `--model`, `--config`, `--human-model`, `--out-dir`,
@@ -216,5 +248,9 @@ which drives the progress bar. Cancelling a job sends a `terminate` action to Ka
 - `src/report_html.rs` Markdown → HTML for the in-app report viewer
 - `src/window.rs` native window (tao + wry WebView) and menu bar
 - `resources/analysis.cfg` the built-in KataGo analysis config
+- `src/teaching.rs` teaching candidates, themes, chains, status changes, phase facts
+- `src/opening.rs` corner opening patterns
+- `src/progress.rs` cross-game progress records
+- `tests/fake_katago.py` a stand-in engine for `cargo test`
 - `static/index.html` upload page and live analysis view
 - `packaging/make_app.sh`, `packaging/make_icon.py` macOS bundle and DMG builder

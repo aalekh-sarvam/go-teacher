@@ -210,6 +210,18 @@ The most persuasive "why" is the punishment: the report's `refutation` is the op
 
 `chain_before` and `chain_after` list the moves in the same area with their losses. The real decision is often the first move in the chain with a large loss, not the shortlisted move; if the chain shows the student compounding one mistake with three more in the same area (each losing 8+ points), the lesson is "stop and reassess after a loss", not the individual moves. A `captured at move N` note on a chain move tells you where the story ends.
 
+### Openings without a joseki book
+
+The report's `openings` section names each corner's shapes (4-4 point, small knight's approach, 3-3 invasion ...) and marks the first move KataGo disliked. Treat the summary as a search key: "4-4 small knight approach 3-3 invasion joseki" finds the standard sequences on Sensei's Library and Go Magic. Compare the student's sequence with the standard one only after reading a source; do not recite a joseki from memory, and when the sources disagree with KataGo's choice say so and side with KataGo for this position.
+
+### Trends across games
+
+`history` compares this game with the student's recent ones. Two rules: a difference of less than 0.3 points of mean loss is noise, and a theme is "recurring" only when it appears in three or more of the recent games' candidate lists. When a theme recurs, make it the first lesson even if a bigger one-off blunder exists in this game: the habit is worth more than the accident.
+
+### Thinking time
+
+When `time_and_loss` exists and fast moves lose clearly more (say 1.5 points more per move) than slow ones, the meta-lesson is pacing. Name the moves that were both fast and expensive (candidates with `fast: true`) and prescribe a concrete habit: before every capture or contact move, count liberties of both groups.
+
 ### Grading alternatives
 
 The candidate table gives `Loss vs best` for each move KataGo searched. Use these thresholds for the `quality` field: best < 0.5, good < 1.5, inaccuracy < 3, mistake < 6, big mistake < 12, blunder ≥ 12. For each alternative you list, explain *what goes wrong* (the opponent's reply from the PV, the group left weak, the point left open), not only the number. A move with 1 visit has an unreliable number; say "KataGo barely looked at this" rather than quoting a precise loss.

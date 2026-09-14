@@ -14,7 +14,7 @@ import sys
 
 CATEGORIES = r'(best/excellent|good|inaccuracy|mistake|big mistake|blunder)'
 MOVE = r'([A-T]\d+|pass)'
-SUPPORTED_FORMATS = {2, 3}   # "Report format: N" line written by go_teacher
+SUPPORTED_FORMATS = {2, 3, 4}   # "Report format: N" line written by go_teacher
 
 
 def report_format(text):
@@ -192,6 +192,8 @@ def parse_teaching(text):
             ch = re.match(r'Chain in this area — before: (.*); after: (.*)\.$', line)
             th = re.match(r'Theme: (.*?)\. Phase: (\w+)\.$', line)
             sc = re.match(r'This move changed the status of the (Black|White) group at (\S+) \((\d+) stones?\): (\w+) → (\w+)\.$', line)
+            tg = re.match(r'Players at the stronger target profile play this move (.*?) of the time \(#(\d+)\)(?:; their most common move here is (\S+) \((\d+)%\))?\.$', line)
+            tm = re.match(r'Played (?:in|after) ([\d.]+) s', line)
             if pm:
                 c['opponent_last_move'] = None if pm.group(2) == 'none' else pm.group(2)
                 c['black_stones'] = [] if pm.group(3) == 'none' else pm.group(3).split()
@@ -209,6 +211,13 @@ def parse_teaching(text):
                 c['phase'] = th.group(2)
             elif sc:
                 c['status_changes'].append({'group_color': sc.group(1)[0], 'anchor': sc.group(2), 'stones': int(sc.group(3)), 'from': sc.group(4), 'to': sc.group(5)})
+                c['hints'].append(line)
+            elif tg:
+                c['target_policy'] = {'prob': tg.group(1), 'rank': int(tg.group(2)), 'top_move': tg.group(3), 'top_prob': (tg.group(4) + '%') if tg.group(4) else None}
+                c['hints'].append(line)
+            elif tm:
+                c['time_spent_seconds'] = float(tm.group(1))
+                c['fast'] = 'fastest' in line
                 c['hints'].append(line)
             elif line.startswith('Full entry'):
                 continue
@@ -264,6 +273,59 @@ def parse_arc(text):
     for m in re.finditer(r'^\|\s*(\d+)\s*\|\s*(Black|White)\s*\|\s*(Black|White) (\S+)\s*\|\s*(\d+)\s*\|\s*(\w+)\s*\|\s*(\w+)\s*\|', body, re.MULTILINE):
         out['status_changes'].append({'move_number': int(m.group(1)), 'mover': m.group(2)[0], 'group_color': m.group(3)[0],
                                       'anchor': m.group(4), 'stones': int(m.group(5)), 'from': m.group(6), 'to': m.group(7)})
+    return out
+
+
+def parse_openings(text):
+    """'## Opening patterns': per corner, the described moves and the first deviation."""
+    out = []
+    body = section(text, 'Opening patterns')
+    for blk in re.finditer(r'^### (.+?) corner: (.*?)\n(.*?)(?=^### |\Z)', body, re.DOTALL | re.MULTILINE):
+        corner = {'corner': blk.group(1), 'summary': blk.group(2).strip(), 'moves': [], 'first_deviation': None}
+        for m in re.finditer(r'^- Move (\d+) (Black|White) (\S+): (.*?) \(loss ([\d.+-]+), (.*?)\)$', blk.group(3), re.MULTILINE):
+            corner['moves'].append({'move_number': int(m.group(1)), 'color': m.group(2)[0], 'move': m.group(3),
+                                    'description': m.group(4), 'point_loss': float(m.group(5)), 'verdict': m.group(6)})
+        d = re.search(r'First deviation: move (\d+) (\S+) \(KataGo preferred (\S+), ([\d.]+) points\)', blk.group(3))
+        if d:
+            corner['first_deviation'] = {'move_number': int(d.group(1)), 'move': d.group(2), 'preferred': d.group(3), 'point_loss': float(d.group(4))}
+        out.append(corner)
+    return out
+
+
+def parse_history(text):
+    """'## Compared with the student's earlier games': this game vs recent averages, recurring themes, past games."""
+    body = section(text, "Compared with the student's earlier games")
+    if not body:
+        return None
+    out = {'earlier_games': 0, 'metrics': {}, 'recurring_themes': [], 'games': []}
+    m = re.search(r'The student has (\d+) earlier analysed games', body)
+    if m:
+        out['earlier_games'] = int(m.group(1))
+    for m in re.finditer(r'^\|\s*([^|]+?)\s*\|\s*([\d.%]+)\s*\|\s*([\d.%]+)\s*\|\s*$', body, re.MULTILINE):
+        if m.group(1) not in ('Metric', 'Game'):
+            out['metrics'][m.group(1)] = {'this_game': m.group(2), 'recent_average': m.group(3)}
+    m = re.search(r'Recurring themes in recent games \(teaching candidates per theme\): (.*?)\.$', body, re.MULTILINE)
+    if m:
+        out['recurring_themes'] = [{'theme': t.group(1).strip(), 'count': int(t.group(2))} for t in re.finditer(r'([^,()]+?) \((\d+)\)', m.group(1))]
+    for m in re.finditer(r'^\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([\d.]+)\s*\|\s*(\d+)%\s*\|\s*$', body, re.MULTILINE):
+        if m.group(1) != 'Game':
+            out['games'].append({'game': m.group(1), 'date': m.group(2), 'opponent': m.group(3), 'result': m.group(4),
+                                 'mean_loss': float(m.group(5)), 'top1_rate': m.group(6) + '%'})
+    return out
+
+
+def parse_time_and_loss(text):
+    """'### Time and loss' in the Summary: fast vs slow moves per player."""
+    body = section(text, 'Summary')
+    m = re.search(r'### Time and loss\s*\n(.*?)(?=\n###|\Z)', body, re.DOTALL)
+    if not m:
+        return None
+    out = {'median_seconds': None, 'players': {}}
+    med = re.search(r'median thinking time \(([\d.]+) s\)', m.group(1))
+    if med:
+        out['median_seconds'] = float(med.group(1))
+    for r in re.finditer(r'^\|\s*(Black|White)\s*\|\s*(\d+)\s*\|\s*([\d.]+)\s*\|\s*(\d+)\s*\|\s*([\d.]+)\s*\|', m.group(1), re.MULTILINE):
+        out['players'][r.group(1)[0]] = {'fast_moves': int(r.group(2)), 'fast_mean_loss': float(r.group(3)), 'slow_moves': int(r.group(4)), 'slow_mean_loss': float(r.group(5))}
     return out
 
 
@@ -337,10 +399,16 @@ def parse_move_analysis(text):
         m = re.search(r'expected continuation after\s+' + re.escape(coord) + r':\s*((?:[A-T]\d+|pass)(?:\s+(?:[A-T]\d+|pass))*)', sec)
         if m:
             d['played_pv'] = m.group(1).split()
-        m = re.search(r'Network policy for \S+: (<?[\d.]+%) \(#(\d+) over the whole board\)\.(?: Human policy: (<?[\d.]+%) \(#(\d+)\)(?:, most common human move (\S+) \(([\d.]+)%\))?\.)?', sec)
+        m = re.search(r'Network policy for \S+: (<?[\d.]+%) \(#(\d+) over the whole board\)\.(?: Human policy: (<?[\d.]+%) \(#(\d+)\)(?:, most common human move (\S+) \(([\d.]+)%\))?\.)?(?: Target profile: (<?[\d.]+%) \(#(\d+)\)(?:, most common move (\S+) \(([\d.]+)%\))?\.)?', sec)
         if m:
             d['policy_prob'] = m.group(1)
             d['policy_rank'] = int(m.group(2))
+            if m.group(7):
+                d['target_policy_prob'] = m.group(7)
+                d['target_policy_rank'] = int(m.group(8))
+                if m.group(9):
+                    d['target_top_move'] = m.group(9)
+                    d['target_top_prob'] = m.group(10) + '%'
             if m.group(3):
                 d['human_policy_prob'] = m.group(3)
                 d['human_policy_rank'] = int(m.group(4))
@@ -350,6 +418,9 @@ def parse_move_analysis(text):
         m = re.search(r'Comment in the game record: (.*)', sec)
         if m:
             d['comment'] = m.group(1).strip()
+        m = re.search(r'Time spent on this move: ([\d.]+) s\.', sec)
+        if m:
+            d['time_spent_seconds'] = float(m.group(1))
 
         cm = re.search(r'Candidates in the position before this move:\s*\n(.*?)(?=\nPosition after|\n###|\n- \*\*Move|\Z)', sec, re.DOTALL)
         if cm:
@@ -386,6 +457,9 @@ def parse_review(text, full=False):
         'summary': parse_summary(text),
         'teaching': parse_teaching(text),
         'arc': parse_arc(text),
+        'openings': parse_openings(text),
+        'history': parse_history(text),
+        'time_and_loss': parse_time_and_loss(text),
         'moves': parse_compact_moves(text),
         'move_details': parse_move_analysis(text),
     }

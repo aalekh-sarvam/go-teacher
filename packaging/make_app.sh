@@ -48,13 +48,28 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>LSApplicationCategoryType</key><string>public.app-category.board-games</string>
   <key>NSHumanReadableCopyright</key><string>Go Teacher — local KataGo game review</string>
+  <key>CFBundleDocumentTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleTypeName</key><string>Smart Game Format</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>CFBundleTypeExtensions</key><array><string>sgf</string></array>
+      <key>LSItemContentTypes</key><array><string>public.data</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
 echo -n "APPL????" > "$APP/Contents/PkgInfo"
 
-echo "==> signing (ad hoc)"
-codesign --force --deep --sign - "$APP"
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+  echo "==> signing with $CODESIGN_IDENTITY (hardened runtime)"
+  codesign --force --deep --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$APP"
+else
+  echo "==> signing (ad hoc; set CODESIGN_IDENTITY=\"Developer ID Application: ...\" for a distributable build)"
+  codesign --force --deep --sign - "$APP"
+fi
 codesign --verify --verbose=1 "$APP"
 
 echo "==> building DMG"
@@ -64,6 +79,16 @@ ln -s /Applications "$STAGE/Applications"
 DMG="$DIST/GoTeacher-$VERSION.dmg"
 hdiutil create -volname "$APP_NAME" -srcfolder "$STAGE" -ov -format UDZO -quiet "$DMG"
 rm -rf "$STAGE"
+if [ -n "${CODESIGN_IDENTITY:-}" ]; then
+  codesign --force --timestamp --sign "$CODESIGN_IDENTITY" "$DMG"
+fi
+if [ -n "${NOTARY_PROFILE:-}" ]; then
+  # One-time setup: xcrun notarytool store-credentials "$NOTARY_PROFILE" --apple-id ... --team-id ... --password <app-specific>
+  echo "==> notarizing with keychain profile $NOTARY_PROFILE"
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  xcrun stapler staple "$APP"
+fi
 
 echo
 echo "Done:"

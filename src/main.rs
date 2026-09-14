@@ -2,6 +2,8 @@ mod analysis;
 mod board;
 mod katago;
 mod report;
+mod opening;
+mod progress;
 mod report_html;
 mod server;
 mod sgf;
@@ -34,6 +36,14 @@ pub struct Settings {
     pub config: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub human_model: Option<PathBuf>,
+    /// Folder polled for new SGF files (analysed automatically with the defaults below).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch_human_profile: Option<String>,
+    /// Folder of the go-game-teacher skill, used to build lesson bundles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_dir: Option<PathBuf>,
 }
 
 pub fn settings_dir() -> PathBuf {
@@ -124,6 +134,9 @@ enum Command {
         /// Which side is the student (B or W); default: detect from player names.
         #[arg(long)]
         student: Option<String>,
+        /// Stronger human profile to compare against (e.g. rank_5k when the student is 10k).
+        #[arg(long)]
+        human_profile_target: Option<String>,
         /// Two-pass analysis: cheap first pass (--visits, default 150) then key positions at --deep-visits.
         #[arg(long)]
         two_pass: bool,
@@ -347,14 +360,14 @@ fn main() -> Result<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     match cli.command.unwrap_or(Command::Serve) {
         Command::Serve => serve(runtime, paths, out_dir, cli.port, cli.no_open, !cli.browser),
-        Command::Analyze { files, visits, human_profile, student, two_pass, deep_visits } => {
+        Command::Analyze { files, visits, human_profile, human_profile_target, student, two_pass, deep_visits } => {
             let student = match student.as_deref().map(|s| s.trim().to_ascii_uppercase()) {
                 None => None,
                 Some(s) if s == "B" || s == "BLACK" => Some(sgf::Color::Black),
                 Some(s) if s == "W" || s == "WHITE" => Some(sgf::Color::White),
                 Some(s) => anyhow::bail!("--student must be B or W, not {:?}", s),
             };
-            runtime.block_on(analyze_files(engine_cfg, out_dir, files, visits, human_profile, student, two_pass, deep_visits))
+            runtime.block_on(analyze_files(engine_cfg, out_dir, files, visits, human_profile, human_profile_target, student, two_pass, deep_visits))
         }
     }
 }
@@ -442,7 +455,7 @@ fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf,
                 eprintln!("go_teacher is already running at {}", url);
                 if windowed {
                     // A window onto the other instance; closing it leaves that instance running.
-                    window::run(url, tokio_util::sync::CancellationToken::new(), runtime.handle().clone(), || {});
+                    window::run(url, tokio_util::sync::CancellationToken::new(), runtime.handle().clone(), || {}, Arc::new(|_| {}));
                 }
                 if !no_open {
                     open_browser(&url);
@@ -466,6 +479,7 @@ fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf,
         settings_path: settings_path(),
         katrain_installed: katrain_resources().is_some(),
         job_slots: Arc::new(tokio::sync::Semaphore::new(1)),
+        benchmark: Mutex::new((false, String::new())),
         windowed,
         out_dir: out_dir.clone(),
         jobs: Mutex::new(Default::default()),
@@ -489,6 +503,42 @@ fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf,
 
     // Load KataGo in the background; the page shows the setup guide if nothing is found.
     start_engine(state.clone(), runtime.handle().clone(), windowed || running_as_app());
+    server::restore_jobs(&state);
+
+    // Watchdog: if KataGo dies outside a shutdown, restart it once per minute at most.
+    {
+        let state = state.clone();
+        let handle = runtime.handle().clone();
+        runtime.spawn(async move {
+            let mut last_restart: Option<std::time::Instant> = None;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                if state.shutdown.is_cancelled() {
+                    return;
+                }
+                let dead = matches!(&*state.engine.read().unwrap(), server::EngineState::Ready(e) if !e.is_alive());
+                if dead && last_restart.map_or(true, |t| t.elapsed().as_secs() >= 60) {
+                    tracing::error!("KataGo exited unexpectedly; restarting");
+                    last_restart = Some(std::time::Instant::now());
+                    start_engine(state.clone(), handle.clone(), false);
+                }
+            }
+        });
+    }
+    // Memory: drop position data of finished jobs idle for 10 minutes; reloaded on demand.
+    {
+        let state = state.clone();
+        runtime.spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if state.shutdown.is_cancelled() {
+                    return;
+                }
+                server::spill_idle_jobs(&state, std::time::Duration::from_secs(600));
+            }
+        });
+    }
+    runtime.spawn(server::watch_folder_task(state.clone()));
 
     eprintln!("go_teacher UI: {}", url);
     eprintln!("Reports are written to {}", out_dir.display());
@@ -514,7 +564,12 @@ fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf,
     };
 
     if windowed {
-        window::run(url, shutdown, runtime.handle().clone(), stop_engine)
+        let st = state.clone();
+        let on_files: Arc<dyn Fn(Vec<PathBuf>) + Send + Sync> = Arc::new(move |paths| {
+            let ids = server::queue_files(&st, paths);
+            tracing::info!("queued {} dropped/opened file(s)", ids.len());
+        });
+        window::run(url, shutdown, runtime.handle().clone(), stop_engine, on_files)
     } else {
         if !no_open {
             open_browser(&url);
@@ -539,7 +594,7 @@ async fn reqwest_free_probe(url: &str) -> bool {
     String::from_utf8_lossy(&buf).contains("engine_version")
 }
 
-async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files: Vec<PathBuf>, visits: Option<u64>, human_profile: Option<String>, student: Option<sgf::Color>, two_pass: bool, deep_visits: Option<u64>) -> Result<()> {
+async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files: Vec<PathBuf>, visits: Option<u64>, human_profile: Option<String>, human_profile_target: Option<String>, student: Option<sgf::Color>, two_pass: bool, deep_visits: Option<u64>) -> Result<()> {
     engine_cfg.validate()?;
     // Directories expand to every .sgf inside them (sorted), so a whole folder can be batched.
     let mut expanded: Vec<PathBuf> = Vec::new();
@@ -576,13 +631,14 @@ async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files
         let opts = analysis::AnalysisOptions {
             max_visits: visits,
             human_profile: human_profile.clone(),
+            human_profile_target: human_profile_target.clone(),
             student,
             two_pass,
             deep_visits,
             ..Default::default()
         };
         let cancel = tokio_util::sync::CancellationToken::new();
-        let analysis = analysis::analyze_game(&engine, game, opts, cancel, |done, total, _| {
+        let analysis = analysis::analyze_game(&engine, game, opts, cancel, None, |done, total, _| {
             if done % 10 == 0 || done == total {
                 eprintln!("  {}/{} positions", done, total);
             }
@@ -590,7 +646,13 @@ async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files
         .await?;
         let stamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
         let base = format!("{}_{}", stamp, name);
+        let mut analysis = analysis;
+        analysis.history = progress::history_for(&out_dir, &analysis);
+        if analysis.game.game_name.is_none() {
+            analysis.game.game_name = Some(name.clone());
+        }
         let (_, _, md_path, json_path) = server::write_outputs(&out_dir, &base, &analysis)?;
+        progress::record(&out_dir, &analysis);
         eprintln!("  wrote {}\n  wrote {}", md_path.display(), json_path.display());
     }
     Ok(())

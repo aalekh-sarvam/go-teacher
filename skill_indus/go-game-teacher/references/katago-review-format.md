@@ -2,9 +2,9 @@
 
 Structure of the markdown produced by go_teacher (KataGo analysis). `scripts/parse_review.py` extracts everything below into JSON; this reference explains what the fields mean. The markdown is self-contained: nothing from the original SGF is needed.
 
-**Format version.** Line 3 reads `Report format: N`. This document describes format 3; the parser also accepts format 2 (no theme column, no refutation/chain lines, no arc section). Reports without the line are treated as format 2.
+**Format version.** Line 3 reads `Report format: N`. This document describes format 4; the parser also accepts 3 and 2. Reports without the line are treated as format 2.
 
-Format history: 2 = teaching candidates, policy lines, compact entries; 3 = theme column, refutation and better line, chains, status changes, Game arc facts, two-pass markers.
+Format history: 2 = teaching candidates, policy lines, compact entries; 3 = theme column, refutation and better line, chains, status changes, Game arc facts, two-pass markers; 4 = Opening patterns, Compared with earlier games, Time and loss / time spent, target human profile.
 
 ## Top-level structure
 
@@ -18,6 +18,8 @@ Report format: 3
                                  then "### Good moves worth praising"
 ## Game arc facts              — per-phase numbers, then "### Life-and-death changes"
 ## Move-by-move analysis       — full entries for key moves (◆ = deeply re-analysed), one-line entries for the rest
+## Opening patterns            — (13x13+) per corner: point names, approaches, invasions, first deviation
+## Compared with the student's earlier games — (2+ earlier games) this game vs recent average, recurring themes, past games
 ## Final position              — KataGo's estimate and suggestions at the end of the record
 ## Appendix: compact move list — one line per move (canonical move list)
 ```
@@ -83,6 +85,22 @@ A table with one row per phase the game had:
 Winrate and score are at the start and end of the phase; "worst" is the biggest single loss per side (move, coordinate, points); "top-1" is how often the student found KataGo's first choice; "hot regions" are the board regions (upper left, top side, upper right, left side, centre, right side, lower left, bottom side, lower right) where ownership changed most over the phase, with the summed change in points. Parsed as `arc.phases`.
 
 `### Life-and-death changes`: a table `| Move | Played by | Group | Stones | From | To |` of groups (two stones or more, or a captured group) whose predicted owner changed with a move — statuses `alive`, `dead`, `unsettled`, `captured`. Parsed as `arc.status_changes`. This is the only source you may use for "this group died / was saved / was captured".
+
+## Time and loss (Summary, when the record has clocks)
+
+`### Time and loss`: the median thinking time and, per player, the number of fast (≤ median) and slow moves with their mean loss. Full move entries then carry `- Time spent on this move: N s.`, and candidate blocks a hint "Played in N s, among the fastest quarter ..." or "... slowest quarter ...". Parsed as `time_and_loss`, `move_details[n].time_spent_seconds`, `candidates[].time_spent_seconds` / `fast`.
+
+## Opening patterns (boards of 13 lines or more)
+
+One `### <corner> corner: <summary>` block per corner that saw play in the first 50 moves. Each line: `- Move N Colour MV: <description> (loss X, KataGo's choice | KataGo's #k | not searched)`. Descriptions are derived from the stones: `4-4 point`, `3-4 point`, `small knight's approach (3-6 point)`, `one-space jump / high approach`, `3-3 invasion`, `attachment to the previous stone`, ... Then `First deviation: move N MV (KataGo preferred X, L points).` or `No move in this corner lost 1.5 points or more.` There is **no joseki database** behind this: the names describe shapes, and KataGo judges each move; research the named pattern online for the standard sequences. Parsed as `openings[]` with `corner`, `summary`, `moves[]`, `first_deviation`.
+
+## Compared with the student's earlier games (once two or more earlier games exist)
+
+A metric table (this game vs the recent average of up to 10 earlier games: mean loss, loss per phase, top-1 rate, moves losing 3+), a `Recurring themes in recent games` line (teaching-candidate themes counted across those games), and a table of the past games (name, date, opponent, result, mean loss, top-1). Parsed as `history`. Same-student matching uses the player name when the SGF has one, else the colour.
+
+## Target human profile
+
+When a second, stronger profile was chosen at upload, policy lines gain `Target profile: p% (#k), most common move X (q%)` and candidate hints gain `Players at the stronger target profile play this move ...`. Parsed as `move_details[n].target_policy_*` and `candidates[].target_policy`.
 
 ## Move-by-move analysis
 
