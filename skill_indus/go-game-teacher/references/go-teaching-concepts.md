@@ -171,14 +171,14 @@ When selecting 2-3 mistakes from a game:
 2. **Group by theme** — if moves 15 and 17 are both shape mistakes, pick the bigger one and find a different theme for the second lesson
 3. **Prefer early/mid-game** — opening and middlegame mistakes are more instructive than endgame counting errors for beginners
 4. **Look for instructive patterns** — a move that was "not searched by KataGo" is often a very unnatural move and worth teaching
-5. **Consider the narrative** — pick mistakes that tell a story: "first you played too close, then you invaded too early, then you missed a capture"
+5. **Consider the narrative** — pick mistakes that tell a story: "first you played too close, then you invaded too early, then you missed a capture". See `references/game-arc-commentary.md` for how to turn that story into the game-arc narrative and per-lesson cause→effect chains.
 6. **Check for missed opportunities** — sometimes the most instructive moment is a move the player DIDN'T play that KataGo rated much higher
 
 A good lesson set covers 2-3 distinct themes and gives the student actionable principles they can apply in their next game.
 
 ### Start from the program's shortlist
 
-The report's **Teaching candidates** section already applies rules 1, 2 and 4: it ranks the student's losses, removes repeats from the same local fight, and flags unsearched moves via the policy rank. Use its hints (`loss_region`, `better_move_is`, `captured_at`, atari, tenuki) to assign a theme quickly:
+The report's **Teaching candidates** section already applies rules 1, 2 and 4: it ranks the student's losses, removes repeats from the same local fight, flags unsearched moves via the policy rank, and assigns a **theme** with the rules below (format 3). Take the theme as given unless the refutation or chain clearly shows something else, and say why when you override. The same rules, for reference:
 
 | Hint | Likely theme |
 |---|---|
@@ -201,6 +201,14 @@ When a human profile was chosen, each move has "human policy": how often a playe
 - High human policy (say ≥ 15%) with a large loss: a **typical mistake for the level**. Teach it as a habit to unlearn, and contrast with what stronger players do (KataGo's move, or the most common human move if it is better).
 - Very low human policy (≤ 1%) with a large loss: an **unusual slip**. Often a misclick or a misread; teach the reading, not the habit.
 - The most common human move is often a good "human-sized" recommendation when KataGo's first choice is hard to explain. If it also has a low loss in the candidate table, prefer it as the teaching target and mention KataGo's move as the ideal.
+
+### Explaining with the refutation
+
+The most persuasive "why" is the punishment: the report's `refutation` is the opponent's strongest sequence after the played move, from a real search of that position. Walk it move by move ("1 takes the last outside liberty, 3 captures") and tie the result to the `refutation_score`. Contrast it with the `better_line`: the same fight after the right move. When the candidate has a `status_changes` entry, name the group that died or lived; that is the concrete consequence the student can see.
+
+### Reading the chain
+
+`chain_before` and `chain_after` list the moves in the same area with their losses. The real decision is often the first move in the chain with a large loss, not the shortlisted move; if the chain shows the student compounding one mistake with three more in the same area (each losing 8+ points), the lesson is "stop and reassess after a loss", not the individual moves. A `captured at move N` note on a chain move tells you where the story ends.
 
 ### Grading alternatives
 

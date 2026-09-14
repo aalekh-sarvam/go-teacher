@@ -281,6 +281,43 @@ function initLesson(idx, data, allMoves) {
         setActive(idx, 'alt-' + k);
     }
 
+    // Play a sequence of moves (alternating colours starting with `firstColor`) on the base board,
+    // optionally after the played move, and number the stones.
+    function showSequence(seq, firstColor, afterPlayed, text, cssClass) {
+        const b = baseBoard.clone();
+        var markers = oppMarker ? [oppMarker] : [];
+        let color = data.player_color === 'W' ? 2 : 1;
+        if (afterPlayed) {
+            const xy = gtpToXY(data.played_move, size);
+            if (xy) { b.play(xy[0], xy[1], color); markers.push({x:xy[0], y:xy[1], type:'circle', color:'#e44'}); }
+        }
+        let c = firstColor === 'W' ? 2 : 1;
+        seq.forEach((mv, k) => {
+            const xy = gtpToXY(mv, size);
+            if (!xy) return;
+            b.play(xy[0], xy[1], c);
+            markers.push({x:xy[0], y:xy[1], type:'label', color: c === 1 ? '#fff' : '#000', text: String(k + 1)});
+            c = c === 1 ? 2 : 1;
+        });
+        renderer.board = b; renderer.markers = markers; renderer.draw();
+        explEl.innerHTML = '<div class="' + cssClass + '">' + text + '</div>';
+    }
+
+    function showRefutation() {
+        const opp = data.player_color === 'W' ? 'B' : 'W';
+        showSequence(data.refutation || [], opp, true,
+            '<p><strong>What ' + data.played_move + ' allows.</strong> Numbered stones are the opponent\'s strongest continuation after your move (1 = their reply).</p><p>' + (data.refutation_explanation || '') + '</p>',
+            'played-explanation');
+        setActive(idx, 'refute');
+    }
+
+    function showBetterLine() {
+        showSequence(data.better_line || [], data.player_color, false,
+            '<p><strong>The better line.</strong> Numbered stones follow KataGo\'s recommendation (1 = ' + data.preferred_move + ').</p><p>' + (data.variation_explanation || '') + '</p>',
+            'preferred-explanation');
+        setActive(idx, 'line');
+    }
+
     function showAllCandidates() {
         renderer.board = baseBoard.clone();
         var markers = oppMarker ? [oppMarker] : [];
@@ -304,6 +341,10 @@ function initLesson(idx, data, allMoves) {
     document.getElementById('btn-pref-'+idx).onclick = showPreferred;
     const allBtn = document.getElementById('btn-all-'+idx);
     if (allBtn) allBtn.onclick = showAllCandidates;
+    const refBtn = document.getElementById('btn-refute-'+idx);
+    if (refBtn) refBtn.onclick = showRefutation;
+    const lineBtn = document.getElementById('btn-line-'+idx);
+    if (lineBtn) lineBtn.onclick = showBetterLine;
     (data.alternatives || []).forEach((alt, k) => {
         const btn = document.getElementById('btn-alt-'+idx+'-'+k);
         if (btn) { btn.onclick = () => showAlternative(k); btn.style.borderColor = qualityColor(alt.quality, alt.loss_vs_best); }
@@ -391,6 +432,17 @@ function initPuzzle(idx, data) {
             if (wrong) {
                 const col = qualityColor(wrong.quality, wrong.loss_vs_best);
                 markers[markers.length - 1] = {x:xy[0], y:xy[1], type:'circle', color:col};
+                // Show the punishment: the opponent's replies to the wrong move, numbered.
+                if (wrong.refutation && wrong.refutation.length) {
+                    let c = color === 1 ? 2 : 1;
+                    wrong.refutation.forEach((mv, k) => {
+                        const rxy = gtpToXY(mv, size);
+                        if (!rxy) return;
+                        renderer.board.play(rxy[0], rxy[1], c);
+                        markers.push({x:rxy[0], y:rxy[1], type:'label', color: c === 1 ? '#fff' : '#000', text: String(k + 1)});
+                        c = c === 1 ? 2 : 1;
+                    });
+                }
                 renderer.markers = markers;
                 feedback.innerHTML = '<p class="wrong"><span class="quality-badge" style="background:' + col + '">' + (wrong.quality || 'mistake') + '</span> '
                     + clickedGtp + ' is a natural try, but not the best move. ' + wrong.explanation + '</p><p class="hint-text">Try again, or use "Show evaluations".</p>';
@@ -451,6 +503,7 @@ section { background: #fff; border-radius: 10px; padding: 24px; margin-bottom: 2
 h2 { color: #3a2a10; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #e0d5c0; }
 .lesson-meta, .puzzle-meta { display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .badge { background: #dcb35c; color: #3a2a10; padding: 3px 12px; border-radius: 12px; font-size: 0.85em; font-weight: 600; }
+.badge-theme { background: #e8e0f4; color: #4a3a6a; }
 .move-ref { color: #888; font-size: 0.85em; padding: 3px 0; }
 .loss { color: #c33; font-size: 0.85em; padding: 3px 0; }
 .lesson-content, .puzzle-content { display: flex; gap: 24px; flex-wrap: wrap; }
@@ -502,6 +555,18 @@ footer { text-align: center; padding: 20px; color: #999; font-size: 0.85em; }
 .eval-list { margin: 8px 0 0 18px; }
 .eval-list li { margin-bottom: 6px; }
 .legend-circle-yellow { border: 3px solid #d4a017; border-radius: 50%; }
+.arc-section { }
+.arc-intro { color: #555; font-style: italic; margin-bottom: 14px; }
+.phase-card { margin-bottom: 16px; padding: 14px 16px; background: #faf6ee; border-radius: 8px; border-left: 4px solid #b88a2a; }
+.phase-header { display: flex; gap: 10px; align-items: baseline; margin-bottom: 8px; flex-wrap: wrap; }
+.phase-name { font-weight: 700; color: #3a2a10; font-size: 1.05em; }
+.phase-range { color: #8a6a2a; font-size: 0.85em; }
+.phase-card p { margin-bottom: 8px; }
+.phase-card p:last-child { margin-bottom: 0; }
+.turning-points { margin: 8px 0 0 18px; }
+.turning-points li { margin-bottom: 4px; font-size: 0.92em; color: #555; }
+.lesson-story { margin-bottom: 14px; padding: 10px 14px; background: #f0f4f8; border-radius: 6px; border-left: 3px solid #5a7a9a; }
+.lesson-story .story-label { font-weight: 700; color: #3a4a5a; display: block; margin-bottom: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
 .overview-text p { margin-bottom: 12px; }
 @media (max-width: 700px) {
     .lesson-content, .puzzle-content { flex-direction: column; }
@@ -544,6 +609,41 @@ def format_paragraphs(text):
     return '\n'.join(html_parts)
 
 
+def build_arc_section(game_arc):
+    """Build the 'How the Game Unfolded' section HTML, or '' if no arc data."""
+    if not game_arc or not game_arc.get('phases'):
+        return ''
+    intro_html = ''
+    if game_arc.get('intro'):
+        intro_html = f'<p class="arc-intro">{escape_html(game_arc["intro"])}</p>'
+    cards = ''
+    for ph in game_arc.get('phases', []):
+        name = escape_html(str(ph.get('phase', '')))
+        rng = escape_html(str(ph.get('move_range', ''))) if ph.get('move_range') else ''
+        header = f'<div class="phase-header"><span class="phase-name">{name}</span>'
+        if rng:
+            header += f'<span class="phase-range">moves {rng}</span>'
+        header += '</div>'
+        body = format_paragraphs(ph.get('narrative', ''))
+        tp_html = ''
+        turning = ph.get('turning_points') or []
+        if turning:
+            items = ''.join(f'<li>{escape_html(str(t))}</li>' for t in turning)
+            tp_html = f'<ul class="turning-points">{items}</ul>'
+        cards += f'<div class="phase-card">{header}{body}{tp_html}</div>'
+    return ('<section class="arc-section">'
+            '<h2>How the Game Unfolded</h2>'
+            f'{intro_html}{cards}</section>')
+
+
+def build_story_html(lesson):
+    """Build the 'How we got here' block for a lesson, or '' if no story."""
+    if not lesson.get('story'):
+        return ''
+    return ('<div class="lesson-story"><span class="story-label">How we got here</span>'
+            f'{format_paragraphs(lesson["story"])}</div>')
+
+
 def generate_html(parsed_data, lesson_data):
     """Generate the complete HTML file."""
     gi = parsed_data.get('game_info', {})
@@ -571,6 +671,7 @@ def generate_html(parsed_data, lesson_data):
 
         player_color = color_for(lesson)
         alternatives = lesson.get('alternatives', [])
+        story_html = build_story_html(lesson)
 
         winrate_info = ''
         if 'winrate_before' in lesson:
@@ -598,6 +699,7 @@ def generate_html(parsed_data, lesson_data):
   <h2>Lesson {i+1}: {escape_html(lesson['title'])}</h2>
   <div class="lesson-meta">
     <span class="badge">{escape_html(lesson['concept_label'])}</span>
+    {('<span class="badge badge-theme">' + escape_html(lesson['theme']) + '</span>') if lesson.get('theme') else ''}
     <span class="move-ref">Move {move_num}</span>
     <span class="loss">Loss: {lesson['point_loss']} pts</span>
     {winrate_info}
@@ -611,6 +713,8 @@ def generate_html(parsed_data, lesson_data):
         <button id="btn-played-{i}">Show played move</button>
         <button id="btn-pref-{i}">Show better move</button>
         {'<button id="btn-all-' + str(i) + '">Show all candidates</button>' if alternatives else ''}
+        {'<button id="btn-refute-' + str(i) + '">What it allows</button>' if lesson.get('refutation') else ''}
+        {'<button id="btn-line-' + str(i) + '">Better line</button>' if lesson.get('better_line') else ''}
       </div>
       {alt_buttons}
       <div class="board-legend">
@@ -621,6 +725,7 @@ def generate_html(parsed_data, lesson_data):
       </div>
     </div>
     <div class="lesson-side">
+      {story_html}
       <div class="explanation" id="explanation-{i}">
         <p class="hint-text">Click "Show played move" to see what you played, or "Show better move" to see KataGo's recommendation.</p>
       </div>
@@ -750,6 +855,9 @@ def generate_html(parsed_data, lesson_data):
             'variation_explanation': l['variation_explanation'],
             'point_loss': l.get('point_loss'),
             'played_quality': l.get('played_quality'),
+            'refutation': l.get('refutation', []),
+            'refutation_explanation': l.get('refutation_explanation', ''),
+            'better_line': l.get('better_line', []),
             'alternatives': [
                 {
                     'move': a['move'],
@@ -769,6 +877,9 @@ def generate_html(parsed_data, lesson_data):
 
     # Overall feedback
     overview_html = format_paragraphs(lesson_data.get('overall_feedback', ''))
+
+    # Game arc (phase-by-phase narrative) — skipped if absent
+    arc_section = build_arc_section(lesson_data.get('game_arc'))
 
     # Game title
     title = escape_html(lesson_data.get('game_title', 'Go Game Review'))
@@ -802,6 +913,8 @@ def generate_html(parsed_data, lesson_data):
     {overview_html}
   </div>
 </section>
+
+{arc_section}
 
 {''.join(lesson_sections)}
 

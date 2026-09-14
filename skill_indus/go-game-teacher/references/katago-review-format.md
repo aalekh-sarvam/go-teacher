@@ -2,16 +2,22 @@
 
 Structure of the markdown produced by go_teacher (KataGo analysis). `scripts/parse_review.py` extracts everything below into JSON; this reference explains what the fields mean. The markdown is self-contained: nothing from the original SGF is needed.
 
+**Format version.** Line 3 reads `Report format: N`. This document describes format 3; the parser also accepts format 2 (no theme column, no refutation/chain lines, no arc section). Reports without the line are treated as format 2.
+
+Format history: 2 = teaching candidates, policy lines, compact entries; 3 = theme column, refutation and better line, chains, status changes, Game arc facts, two-pass markers.
+
 ## Top-level structure
 
 ```
 # Go game review: <title>
-## Game information            — metadata table, including the Student row
+Report format: 3
+## Game information            — metadata table, including the Student row and (two-pass) the number of deeply re-analysed positions
 ## How to read this document   — conventions (skip during parsing)
 ## Summary                     — accuracy, phases, game flow, biggest mistakes per player, turning points
-## Teaching candidates         — the program's shortlist for the student, with board facts + stone lists,
+## Teaching candidates         — the program's shortlist for the student, with board facts, refutation, chain + stone lists,
                                  then "### Good moves worth praising"
-## Move-by-move analysis       — full entries for key moves, one-line entries for the rest
+## Game arc facts              — per-phase numbers, then "### Life-and-death changes"
+## Move-by-move analysis       — full entries for key moves (◆ = deeply re-analysed), one-line entries for the rest
 ## Final position              — KataGo's estimate and suggestions at the end of the record
 ## Appendix: compact move list — one line per move (canonical move list)
 ```
@@ -38,6 +44,7 @@ Begins with `Student: **Black (...)** (reason).` Then a table, one row per candi
 |---|---|
 | Move / Played / Better | move number, played move, KataGo's first choice |
 | Loss | points lost |
+| Theme | rule-based classification: reading / tactics, life and death, tenuki while threatened, over-defending / priority, shape / connection, endgame counting, direction of play, unclassified |
 | Decided? | `yes (98.8%)` when Black's winrate before the move was outside 5–95%; then ignore winrate swings |
 | Where the points went | board region (upper left, top side, ..., centre) and approximate points, from ownership maps |
 | Better move is | `same area (dist d)` = shape/reading; `elsewhere (dist d)` = direction/priority (Chebyshev distance) |
@@ -45,19 +52,41 @@ Begins with `Student: **Black (...)** (reason).` Then a table, one row per candi
 | Net policy | probability and whole-board rank of the played move in KataGo's raw network |
 | Human policy | same for the human-style network at the chosen rank profile (`—` if no profile) |
 
-Then one block per candidate, `### Candidate: move N (Colour MV)`, with bullet **hints** (plain-language facts: decided game, capture, tenuki while threatened, unnecessary local answer, region, groups in atari after the move, policy and human-policy sentences including the most common human move) and a **position line**:
+Then one block per candidate, `### Candidate: move N (Colour MV)`, with bullet **hints** (plain-language facts: decided game, capture, tenuki while threatened, unnecessary local answer, region, groups in atari after the move, status changes caused by the move, "what the move allows", policy and human-policy sentences including the most common human move), followed by these structured lines:
 
 ```
 - Position before the move (Black to play; opponent's last move F4): Black stones F7 F6 E5 F5; White stones D6 E6 D5 E4.
+- Better line (Black first): D4 G4 C4 E2 B6 E8 E7 D7
+- What the move allows (White first): F2 D8 G2 C4 D4 B3 C2 C7 → W+4.8
+- Chain in this area — before: 8 White E4 (loss 5.1), 9 Black D3 (loss 9.1), ...; after: 16 White F2 (loss -0.1), 18 White G6 (loss 14.2; White E4 (4 stones) alive → dead), ...
+- Theme: life and death. Phase: opening.
 ```
 
-Use it to reason about the position without a diagram, and as the base for describing the lesson. Puzzles must not reuse it.
+- **Better line**: KataGo's continuation after its preferred move (mover first). Parsed as `better_line`.
+- **What the move allows**: the opponent's strongest reply and continuation after the played move, with the score it leads to — the punishment. Taken from the analysis of the next position (deep in two-pass mode). Parsed as `refutation` / `refutation_score`.
+- **Chain**: moves within three points of the played move in the eight moves before and twelve after (at most six each side), with point loss and notes: `captured at move N`, `<Colour> <anchor> (<n> stones) <from> → <to>` status changes. Parsed as `chain_before` / `chain_after`, each entry `{move_number, color, move, point_loss, note}`.
+- **Status hints**: "This move changed the status of the Black group at D3 (2 stones): alive → dead." Parsed as `status_changes` on the candidate.
+
+Use the position line to reason about the position without a diagram, and as the base for describing the lesson. Puzzles must not reuse it.
 
 `### Good moves worth praising`: table of Move, Played (`Black G8`), Next best, Gap (pts), Black winrate before — moves where the student found the only good move in a live position.
 
+## Game arc facts
+
+A table with one row per phase the game had:
+
+```
+| Phase | Moves | Black winrate | Score | Student mean loss | Opponent mean loss | Student worst | Opponent worst | Student top-1 | Hot regions |
+| opening | 1–16 | 27.9% → 0.3% | W+0.4 → W+4.7 | 4.95 | 4.45 | 15 G4 (9.6) | 10 C3 (9.1) | 25% | centre (9), bottom side (8) |
+```
+
+Winrate and score are at the start and end of the phase; "worst" is the biggest single loss per side (move, coordinate, points); "top-1" is how often the student found KataGo's first choice; "hot regions" are the board regions (upper left, top side, upper right, left side, centre, right side, lower left, bottom side, lower right) where ownership changed most over the phase, with the summed change in points. Parsed as `arc.phases`.
+
+`### Life-and-death changes`: a table `| Move | Played by | Group | Stones | From | To |` of groups (two stones or more, or a captured group) whose predicted owner changed with a move — statuses `alive`, `dead`, `unsettled`, `captured`. Parsed as `arc.status_changes`. This is the only source you may use for "this group died / was saved / was captured".
+
 ## Move-by-move analysis
 
-**Key moves** (teaching candidates, praised moves, the opponent's six biggest mistakes, checkpoints, the last move) have full entries:
+**Key moves** (teaching candidates, praised moves, the opponent's six biggest mistakes, checkpoints, the last move) have full entries; in two-pass mode a `◆` after the heading marks a move whose before and after positions were re-analysed deeply (parsed as `deep: true`):
 
 ```
 ### Move 15: Black G4

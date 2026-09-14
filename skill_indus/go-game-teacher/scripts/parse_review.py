@@ -14,6 +14,12 @@ import sys
 
 CATEGORIES = r'(best/excellent|good|inaccuracy|mistake|big mistake|blunder)'
 MOVE = r'([A-T]\d+|pass)'
+SUPPORTED_FORMATS = {2, 3}   # "Report format: N" line written by go_teacher
+
+
+def report_format(text):
+    m = re.search(r'^Report format:\s*(\d+)', text, re.MULTILINE)
+    return int(m.group(1)) if m else 2   # reports before the line existed
 
 
 def section(text, heading):
@@ -57,6 +63,10 @@ def parse_game_info(text):
                 info['student'] = val[:1].upper() if val[:1].upper() in 'BW' else 'B'
         elif key == 'analysis strength':
             info['analysis_strength'] = val
+            info['two_pass'] = val.startswith('two-pass')
+        elif key == 'deeply re-analysed positions':
+            m2 = re.match(r'(\d+)', val)
+            info['deepened_positions'] = int(m2.group(1)) if m2 else 0
     info.setdefault('student', 'B')
     return info
 
@@ -119,28 +129,43 @@ def parse_teaching(text):
     if rm:
         out['student_reason'] = rm.group(1)
 
-    row = re.compile(
-        r'\|\s*(\d+)\s*\|\s*' + MOVE + r'\s*\|\s*(' + MOVE[1:-1] + r'|—)\s*\|\s*([\d.]+)\s*\|\s*([^|]*?)\s*\|'
-        r'\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|')
+    header = re.search(r'^\|\s*Move\s*\|.*$', body, re.MULTILINE)
+    cols = [c.strip() for c in header.group(0).strip('|').split('|')] if header else []
     by_number = {}
-    for m in row.finditer(body):
-        decided = m.group(5)
-        region = m.group(6)
+    for line in body.split('\n'):
+        line = line.strip()
+        if not line.startswith('|') or line.startswith('|--') or not cols:
+            continue
+        cells = [c.strip() for c in line.strip('|').split('|')]
+        if len(cells) != len(cols) or not cells[0].isdigit():
+            continue
+        d = dict(zip(cols, cells))
+        decided = d.get('Decided?', '')
+        region = d.get('Where the points went', '')
         rm2 = re.match(r'(.+?)\s*\(~([\d.]+) pts\)', region)
-        cap = re.match(r'yes, move (\d+)', m.group(8))
+        cap = re.match(r'yes, move (\d+)', d.get('Stone captured?', ''))
+        better = d.get('Better', '—')
         c = {
-            'move_number': int(m.group(1)),
-            'played_move': m.group(2),
-            'preferred_move': None if m.group(3) == '—' else m.group(3),
-            'point_loss': float(m.group(4)),
+            'move_number': int(d['Move']),
+            'played_move': d.get('Played'),
+            'preferred_move': None if better == '—' else better,
+            'point_loss': float(d.get('Loss', '0') or 0),
+            'theme': d.get('Theme'),
             'decided_before': decided.startswith('yes'),
             'winrate_before': (re.search(r'([\d.]+%)', decided).group(1) if 'yes' in decided else None),
             'loss_region': rm2.group(1) if rm2 else None,
             'loss_region_points': float(rm2.group(2)) if rm2 else None,
-            'better_move_is': m.group(7),
+            'better_move_is': d.get('Better move is'),
             'captured_at': int(cap.group(1)) if cap else None,
-            'net_policy': m.group(9),
-            'human_policy': m.group(10),
+            'net_policy': d.get('Net policy'),
+            'human_policy': d.get('Human policy'),
+            'refutation': [],
+            'refutation_score': None,
+            'better_line': [],
+            'chain_before': [],
+            'chain_after': [],
+            'status_changes': [],
+            'phase': None,
             'hints': [],
             'black_stones': [],
             'white_stones': [],
@@ -162,10 +187,29 @@ def parse_teaching(text):
                 continue
             line = line[2:]
             pm = re.match(r'Position before the move \((Black|White) to play; opponent\'s last move (\S+)\): Black stones (.*?); White stones (.*?)\.$', line)
+            bl = re.match(r'Better line \((Black|White) first\): (.*)$', line)
+            rf = re.match(r'What the move allows \((Black|White) first\): (.*?) → ([BW]\+[\d.]+)$', line)
+            ch = re.match(r'Chain in this area — before: (.*); after: (.*)\.$', line)
+            th = re.match(r'Theme: (.*?)\. Phase: (\w+)\.$', line)
+            sc = re.match(r'This move changed the status of the (Black|White) group at (\S+) \((\d+) stones?\): (\w+) → (\w+)\.$', line)
             if pm:
                 c['opponent_last_move'] = None if pm.group(2) == 'none' else pm.group(2)
                 c['black_stones'] = [] if pm.group(3) == 'none' else pm.group(3).split()
                 c['white_stones'] = [] if pm.group(4) == 'none' else pm.group(4).split()
+            elif bl:
+                c['better_line'] = bl.group(2).split()
+            elif rf:
+                c['refutation'] = rf.group(2).split()
+                c['refutation_score'] = rf.group(3)
+            elif ch:
+                c['chain_before'] = parse_chain(ch.group(1))
+                c['chain_after'] = parse_chain(ch.group(2))
+            elif th:
+                c['theme'] = th.group(1)
+                c['phase'] = th.group(2)
+            elif sc:
+                c['status_changes'].append({'group_color': sc.group(1)[0], 'anchor': sc.group(2), 'stones': int(sc.group(3)), 'from': sc.group(4), 'to': sc.group(5)})
+                c['hints'].append(line)
             elif line.startswith('Full entry'):
                 continue
             else:
@@ -182,6 +226,44 @@ def parse_teaching(text):
                 'gap_points': float(m.group(5)),
                 'winrate_before': m.group(6),
             })
+    return out
+
+
+def parse_chain(text):
+    """'7 Black F5 (loss 3.3), 9 Black D3 (loss 9.3; captured at move 16)' -> list of dicts."""
+    out = []
+    if text.strip() == 'none':
+        return out
+    for m in re.finditer(r'(\d+) (Black|White) (\S+) \(loss ([\d.+-]+)(?:; ([^)]*))?\)', text):
+        out.append({'move_number': int(m.group(1)), 'color': m.group(2)[0], 'move': m.group(3),
+                    'point_loss': float(m.group(4)), 'note': m.group(5) or ''})
+    return out
+
+
+def parse_arc(text):
+    """The 'Game arc facts' section: per-phase numbers and life-and-death changes."""
+    out = {'phases': [], 'status_changes': []}
+    body = section(text, 'Game arc facts')
+    if not body:
+        return out
+    for m in re.finditer(
+            r'^\|\s*(opening|middlegame|endgame)\s*\|\s*(\d+)–(\d+)\s*\|\s*([\d.]+)% → ([\d.]+)%\s*\|\s*(\S+) → (\S+)\s*\|'
+            r'\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*(\d+)%\s*\|\s*([^|]*?)\s*\|', body, re.MULTILINE):
+        def worst(s):
+            w = re.match(r'(\d+) (\S+) \(([\d.]+)\)', s)
+            return {'move_number': int(w.group(1)), 'move': w.group(2), 'point_loss': float(w.group(3))} if w else None
+        hot = [{'region': h.group(1).strip(), 'points': float(h.group(2))} for h in re.finditer(r'([a-z ]+?) \((\d+)\)', m.group(13))]
+        out['phases'].append({
+            'phase': m.group(1), 'first_move': int(m.group(2)), 'last_move': int(m.group(3)),
+            'winrate_start': m.group(4) + '%', 'winrate_end': m.group(5) + '%',
+            'score_start': m.group(6), 'score_end': m.group(7),
+            'student_mean_loss': float(m.group(8)), 'opponent_mean_loss': float(m.group(9)),
+            'student_worst': worst(m.group(10)), 'opponent_worst': worst(m.group(11)),
+            'student_top1_rate': m.group(12) + '%', 'hot_regions': hot,
+        })
+    for m in re.finditer(r'^\|\s*(\d+)\s*\|\s*(Black|White)\s*\|\s*(Black|White) (\S+)\s*\|\s*(\d+)\s*\|\s*(\w+)\s*\|\s*(\w+)\s*\|', body, re.MULTILINE):
+        out['status_changes'].append({'move_number': int(m.group(1)), 'mover': m.group(2)[0], 'group_color': m.group(3)[0],
+                                      'anchor': m.group(4), 'stones': int(m.group(5)), 'from': m.group(6), 'to': m.group(7)})
     return out
 
 
@@ -221,12 +303,12 @@ def parse_move_analysis(text):
         }
 
     for sec in re.split(r'(?=^### Move \d+:)', body, flags=re.MULTILINE):
-        h = re.match(r'### Move (\d+): (Black|White) (\S+)', sec)
+        h = re.match(r'### Move (\d+): (Black|White) (\S+?)( ◆)?\s*$', sec, re.MULTILINE)
         if not h:
             continue
         n = int(h.group(1))
         coord = h.group(3)
-        d = {'number': n, 'color': h.group(2)[0], 'move': coord, 'brief': False, 'candidates': []}
+        d = {'number': n, 'color': h.group(2)[0], 'move': coord, 'brief': False, 'deep': h.group(4) is not None, 'candidates': []}
 
         m = re.search(r'Point loss for \w+:\s*([\d.+-]+)\s*pts\s*\(([^)]+)\)', sec)
         if m:
@@ -294,10 +376,16 @@ def parse_move_analysis(text):
 
 
 def parse_review(text, full=False):
+    fmt = report_format(text)
+    if fmt not in SUPPORTED_FORMATS:
+        raise SystemExit(f"This report uses format {fmt}; this parser understands {sorted(SUPPORTED_FORMATS)}. "
+                         "Update the go-game-teacher skill (or go_teacher) so the versions match.")
     result = {
+        'report_format': fmt,
         'game_info': parse_game_info(text),
         'summary': parse_summary(text),
         'teaching': parse_teaching(text),
+        'arc': parse_arc(text),
         'moves': parse_compact_moves(text),
         'move_details': parse_move_analysis(text),
     }
@@ -326,7 +414,7 @@ def main():
     with open(args[1], 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=1, ensure_ascii=False)
     t = result['teaching']
-    print(f"Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "
+    print(f"Report format {result['report_format']}  Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "
           f"teaching candidates: {len(t['candidates'])}  praised: {len(t['praise'])}  "
           f"move details: {len(result['move_details'])} ({'full' if full else 'brief'})", file=sys.stderr)
 

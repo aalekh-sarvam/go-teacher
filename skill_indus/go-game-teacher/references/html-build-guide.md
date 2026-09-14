@@ -15,6 +15,27 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
   },
   "result": "W+48.5",
   "overall_feedback": "2-3 paragraphs of stylistic feedback about the player's game. What they do well, what their main weakness is, what phase needs the most work.",
+  "game_arc": {
+    "intro": "1-2 sentences framing the game's overall story: what kind of game it was and where it was decided.",
+    "phases": [
+      {
+        "phase": "Opening",
+        "move_range": "1-14",
+        "narrative": "2-4 sentences: what each side was trying to do, the one or two moves that mattered most, and how the strategic balance shifted. Anchored in move numbers.",
+        "turning_points": ["Move 12: White's shoulder hit pushed Black's extension back — the right side was White's from here on."]
+      },
+      {
+        "phase": "Middle game",
+        "move_range": "15-42",
+        "narrative": "..."
+      },
+      {
+        "phase": "Endgame",
+        "move_range": "43-61",
+        "narrative": "..."
+      }
+    ]
+  },
   "lessons": [
     {
       "title": "Short descriptive title",
@@ -29,10 +50,15 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
       "score_before": "W+7.5",
       "score_after": "W+14.7",
       "explanation": "Detailed explanation for a beginner. Why is the preferred move better? What strategic concept was violated? Use concrete language.",
+      "story": "2-4 sentences tracing the cause->effect chain around this move: how the position arose (the 4-6 moves before it) and what the mistake led to later in the game. This is the context around the tactical explanation, not a repeat of it. Shown as 'How we got here' above the explanation panel.",
       "variation_explanation": "What happens in KataGo's preferred variation. Walk through the PV and explain each significant move.",
       "principle": "One-sentence takeaway the beginner can remember.",
       "player_color": "B",
       "played_quality": "big mistake",
+      "theme": "life and death",
+      "refutation": ["F2", "D8", "G2", "C4"],
+      "refutation_explanation": "2-3 sentences walking the numbered punishment: after 1 (F2) the D3 stones have one liberty; 3 (G2) captures them...",
+      "better_line": ["D4", "G4", "C4", "E2"],
       "alternatives": [
         {"move": "F2", "loss_vs_best": 9.8, "quality": "big mistake", "explanation": "Saves one stone but leaves the D4 cut, so White captures three stones instead."},
         {"move": "C4", "loss_vs_best": 1.2, "quality": "good", "explanation": "Also connects; slightly slower than D4 because it leaves White the E2 hane."}
@@ -53,8 +79,8 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
       "hint": "Look at where White is strong and where the board is open.",
       "explanation": "Explanation of why the correct move is right.",
       "wrong_moves": [
-        {"move": "F5", "quality": "mistake", "loss_vs_best": 4, "explanation": "Too close to White's wall: White presses at F6 and Black's stones are squeezed against strength."},
-        {"move": "E3", "quality": "inaccuracy", "loss_vs_best": 2, "explanation": "Right direction but too slow; G3 claims the same side while pressuring H6."}
+        {"move": "F5", "quality": "mistake", "loss_vs_best": 4, "refutation": ["F6", "E5", "E6"], "explanation": "Too close to White's wall: White presses at F6 (1) and Black's stones are squeezed against strength."},
+        {"move": "E3", "quality": "inaccuracy", "loss_vs_best": 2, "refutation": ["G3"], "explanation": "Right direction but too slow; White takes G3 (1) and claims the side."}
       ],
       "generic_wrong_explanation": "Ask where White is strong (upper right) and where the board is still open."
     }
@@ -87,18 +113,23 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 **Top level:**
 - `game_title`, `players`, `result` — from the parsed JSON
 - `overall_feedback` — your stylistic assessment (2-3 paragraphs)
+- `game_arc` — required: the phase-by-phase narrative. An object with `intro` (1–2 sentences) and `phases`, one entry each for the phases the game actually had (typically Opening / Middle game / Endgame — a very short game may warrant only two, or even one). Each entry: `phase` (display name), `move_range` (e.g. "1–14"), `narrative` (2–4 sentences; blank-line-separated paragraphs allowed), and optional `turning_points` (array of short move-tagged notes). Rendered as a "How the Game Unfolded" section between the Game Overview and the lessons, with one card per phase and turning points as a bulleted list. The generator skips the section only when the field is missing (backwards compatibility with lesson JSON written before this field existed) — never rely on that. Follow the arc methodology and board-fact discipline in `references/game-arc-commentary.md`.
 - `lessons` — array of 2-3 lesson objects
 - `good_moves` — array of 1-3 moves the player played well (shown before puzzles)
 - `puzzles` — array of 2-4 puzzle objects (1-2 per lesson concept)
 - `concepts_learned` — array of Go concepts covered, with Japanese terms, resources, and anecdotes (shown after puzzles)
 
 **Lesson object:**
+- `theme` — the candidate's theme from the report (shown as a badge next to the concept label).
+- `refutation` — the opponent's punishing sequence after the played move, opponent first, GTP coordinates (copy the report's `refutation`, 4–8 moves). Rendered by the **What it allows** button: the board shows the played move (red circle) and then the sequence with numbered stones. `refutation_explanation` is the text shown with it; refer to the stone numbers.
+- `better_line` — KataGo's line after the preferred move, mover first (copy `better_line`). Rendered by the **Better line** button with numbered stones and `variation_explanation` as its text.
 - `player_color` — "B" or "W": the student's colour for this lesson. Optional: when omitted the generator uses the colour of that move in the parsed move list, then `game_info.student`. Set it explicitly when the student is White.
 - `played_quality` — quality label of the played move (best / good / inaccuracy / mistake / big mistake / blunder).
 - `alternatives` — 2–4 other moves a beginner might consider, each with `move`, `loss_vs_best` (points, from the candidate table), `quality`, and an `explanation` of why it is worse or nearly as good. Rendered as buttons under the board; clicking one places the stone with a colour for its quality and shows the explanation. A "Show all candidates" button overlays every listed move at once with its loss.
 - `move_number` — which move in the game this lesson covers (1-indexed). The generate script replays all moves before this to reconstruct the board position.
 - `played_move` / `preferred_move` — GTP coordinates (e.g., "E6", "E7"). The script uses the parsed JSON's move list for the full context.
 - `explanation` — the main teaching text (shown when user clicks "Show played move")
+- `story` — required on every lesson: 2–4 sentences tracing the cause→effect chain around this move (how the position arose and what the mistake led to), anchored in move numbers. Rendered as a "How we got here" block at the top of the lesson side panel, always visible regardless of which navigation button is active. Keep it distinct from `explanation` (the tactical why) — the story is the game-flow context. If a chain genuinely doesn't exist (the mistake came out of nowhere), write that: "This one came out of nowhere — a rare unforced error" still gives the student the arc context.
 - `variation_explanation` — explains what happens when the preferred move is played (shown when user clicks "Show better move")
 - `principle` — one-sentence takeaway, displayed prominently
 
@@ -109,7 +140,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 - `correct_moves` — array of accepted correct answers (usually 1, sometimes 2)
 - `hint` — text shown when user clicks "Hint"
 - `explanation` — shown after a correct answer and in the evaluations overlay
-- `wrong_moves` — 2–3 tempting wrong answers, each `{move, quality, loss_vs_best, explanation}`. Clicking one of them shows its quality badge and the explanation of why it falls short instead of a bare "not quite".
+- `wrong_moves` — 2–3 tempting wrong answers, each `{move, quality, loss_vs_best, refutation, explanation}`. Clicking one shows its quality badge and explanation, and plays `refutation` (the opponent's 1–4 punishing replies, opponent first, GTP coordinates) on the board with numbered stones. Every refutation move must be an empty point after the wrong move is placed; the generator does not validate this.
 - `generic_wrong_explanation` — shown for clicks that match none of the listed moves
 
 **Good move object:**
@@ -146,9 +177,13 @@ Each lesson shows a Go board with three navigation states:
 2. **Show played move** — the same position with the played move added (red circle marker). The blue square on the opponent's last move remains visible.
 3. **Show better move** — the same position with KataGo's preferred move added (green circle marker). The blue square remains visible here too.
 
-The explanation text changes based on which button is active. The principle is always visible below.
+The explanation text changes based on which button is active. The principle is always visible below, and the "How we got here" story block (`story`), when present, is always visible above the explanation panel.
 
 A legend below the board controls explains the three marker types: blue square (opponent's last move), red circle (your move), green circle (KataGo's recommendation).
+
+### Sequence playback on lesson boards
+
+**What it allows** places the played move (red circle) and then the lesson's `refutation` with numbered stones, alternating colours starting with the opponent; the side panel shows `refutation_explanation`. **Better line** plays `better_line` from the base position starting with the student's colour and shows `variation_explanation`. Both buttons appear only when the corresponding array is non-empty.
 
 ### Alternatives on lesson boards
 
@@ -172,10 +207,15 @@ Each puzzle shows a static board position with click handling. A wrong click tha
 ├─────────────────────────────────────┤
 │  Game Overview (overall feedback)    │
 ├─────────────────────────────────────┤
+│  How the Game Unfolded (game arc)    │
+│  Intro + one card per phase           │
+│  (Opening / Middle / Endgame)         │
+├─────────────────────────────────────┤
 │  Lesson 1                             │
 │  ┌──────────┐  ┌─────────────────┐  │
-│  │  Board   │  │  Navigation      │  │
-│  │  Canvas  │  │  Explanation     │  │
+│  │  Board   │  │  How we got here │  │
+│  │  Canvas  │  │  Navigation      │  │
+│  │          │  │  Explanation     │  │
 │  │          │  │  Principle        │  │
 │  └──────────┘  └─────────────────┘  │
 ├─────────────────────────────────────┤
