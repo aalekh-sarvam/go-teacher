@@ -579,7 +579,7 @@ pub async fn analyze_game(
     opts: AnalysisOptions,
     cancel: CancellationToken,
     resume: Option<Vec<Option<TurnEval>>>,
-    mut progress: impl FnMut(usize, usize, Option<&TurnEval>),
+    mut progress: impl FnMut(usize, usize, Option<&TurnEval>, &str),
 ) -> Result<GameAnalysis> {
     let rules = katago_rules(game.rules.as_deref());
     let komi = game.komi.unwrap_or_else(|| default_komi(&rules));
@@ -598,10 +598,11 @@ pub async fn analyze_game(
     };
     let missing: Vec<usize> = (0..=n).filter(|&i| known[i].is_none()).collect();
     let mut done = total1 - missing.len();
-    progress(done, total1, None);
+    let phase1 = if opts.two_pass { "pass 1 of 2: quick analysis of every position" } else { "analysing every position" };
+    progress(done, total1, None, phase1);
     let first = run_query(engine, &game, &rules, komi, &opts, &missing, pass1_visits, &cancel, &mut warnings, |t| {
         done += 1;
-        progress(done, total1, Some(t));
+        progress(done, total1, Some(t), phase1);
     })
     .await?;
     for t in first {
@@ -620,10 +621,11 @@ pub async fn analyze_game(
         let deep = deep_turns(&reviews, &teaching, student, n);
         let deep_visits = Some(opts.deep_visits.unwrap_or(1000));
         let total2 = total1 + deep.len();
-        progress(done, total2, None);
+        let phase2 = format!("pass 2 of 2: deep re-analysis of {} key positions", deep.len());
+        progress(done, total2, None, &phase2);
         let second = run_query(engine, &game, &rules, komi, &opts, &deep, deep_visits, &cancel, &mut warnings, |t| {
             done += 1;
-            progress(done, total2, Some(t));
+            progress(done, total2, Some(t), &phase2);
         })
         .await?;
         for t in second {
@@ -641,10 +643,11 @@ pub async fn analyze_game(
         topts.human_profile = Some(target);
         let all: Vec<usize> = (0..=n).collect();
         let total3 = total1 + deepened.len() + all.len();
-        progress(done, total3, None);
+        let phase3 = "target human profile: one network evaluation per position";
+        progress(done, total3, None, phase3);
         match run_query(engine, &game, &rules, komi, &topts, &all, Some(1), &cancel, &mut warnings, |_| {
             done += 1;
-            progress(done, total3, None);
+            progress(done, total3, None, phase3);
         })
         .await
         {
@@ -737,7 +740,7 @@ mod tests {
             ..Default::default()
         };
         let mut progress_calls = 0;
-        let a = analyze_game(&engine, game, opts, CancellationToken::new(), None, |_, _, _| progress_calls += 1).await.expect("analysis");
+        let a = analyze_game(&engine, game, opts, CancellationToken::new(), None, |_, _, _, _| progress_calls += 1).await.expect("analysis");
         assert_eq!(a.turns.len(), 21);
         assert!(progress_calls > 21, "two-pass and target pass report progress");
         assert!(!a.deepened.is_empty());

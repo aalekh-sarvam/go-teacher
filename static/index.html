@@ -42,6 +42,7 @@
   .guide li { margin-bottom:10px; }
   .guide pre { background:#f3efe3; padding:8px 10px; border-radius:6px; font-size:12px; margin:6px 0; }
   .btn.secondary { background:transparent; color:var(--accent); }
+  .badge-deep { display:inline-block; background:#e8e0f4; color:#4a3a6a; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:700; }
   .notice { padding:8px 12px; border-radius:8px; margin-top:8px; font-size:13px; background:#fbf1d6; color:#7a5a00; }
   /* live viewer */
   .live { display:grid; grid-template-columns: minmax(280px, 560px) minmax(260px, 1fr); gap:18px; align-items:start; }
@@ -721,11 +722,11 @@ async function refreshLive() {
     $('turnslider').value = view.turn;
     const t = await (await fetch('/api/jobs/' + view.job + '/turn/' + view.turn)).json();
     const key = view.job + ':' + view.turn + ':' + (t.eval ? t.eval.visits : 'x') + ':' + live.done + ':' + optsKey();
-    $('turnlabel').textContent = 'after move ' + view.turn + ' of ' + live.moves + ' (' + live.done + '/' + live.total + ' analysed)';
+    $('turnlabel').textContent = 'after move ' + view.turn + ' of ' + live.moves + ' — ' + live.positions_analysed + '/' + live.positions + ' positions' + (live.deepened ? ', ' + live.deepened + ' re-analysed deeply' : '') + (live.state && live.state.state === 'running' && live.phase ? ' — ' + live.phase + ' (' + live.done + '/' + live.total + ' steps)' : '');
     if (t.eval) {
       const nm = t.next_move ? (t.next_move.color + ' ' + t.next_move.move) : 'end of game';
       const rank = t.next_move ? t.eval.candidates.findIndex(c => c.move === t.next_move.move) : -1;
-      $('evalline').innerHTML = '<b>' + t.eval.to_move + ' to play.</b> Black winrate <b>' + fmtPct(t.eval.winrate) + '</b>, score <b>' + lead(t.eval.score_lead) + '</b>, ' + t.eval.visits + ' visits. '
+      $('evalline').innerHTML = (t.eval.deepened ? '<span class="badge-deep">◆ deep</span> ' : '') + '<b>' + t.eval.to_move + ' to play.</b> Black winrate <b>' + fmtPct(t.eval.winrate) + '</b>, score <b>' + lead(t.eval.score_lead) + '</b>, ' + t.eval.visits + ' visits. '
         + 'Move played: <b>' + esc(nm) + '</b>' + (rank >= 0 ? ' (KataGo\'s #' + (rank + 1) + ' choice)' : (t.next_move && t.next_move.move !== 'pass' ? ' (not among searched moves)' : '')) + '.';
     } else {
       $('evalline').innerHTML = '<span class="status">Position after move ' + view.turn + ' — KataGo has not reached this position yet.</span>';

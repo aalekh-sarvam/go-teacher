@@ -58,6 +58,9 @@ pub struct LiveTurn {
     pub ownership: Option<Vec<f32>>,
     pub policy: Option<Vec<f32>>,
     pub human_policy: Option<Vec<f32>>,
+    /// True once the position was re-analysed by the deep second pass.
+    #[serde(default)]
+    pub deepened: bool,
 }
 
 impl From<&TurnEval> for LiveTurn {
@@ -72,6 +75,7 @@ impl From<&TurnEval> for LiveTurn {
             ownership: t.ownership.clone(),
             policy: t.policy.clone(),
             human_policy: t.human_policy.clone(),
+            deepened: false,
         }
     }
 }
@@ -115,6 +119,12 @@ pub struct Job {
     /// True when the position data was dropped from memory and must be reloaded from the JSON dump.
     #[serde(skip)]
     pub spilled: bool,
+    /// What the analysis is doing right now ("pass 2 of 2: ...").
+    #[serde(default)]
+    pub phase: String,
+    /// The position most recently analysed or re-analysed (what the live view follows).
+    #[serde(default)]
+    pub last_updated_turn: Option<usize>,
 }
 
 impl Job {
@@ -215,6 +225,8 @@ pub fn restore_jobs(s: &AppState) {
                 attempts: 0,
                 last_access: None,
                 spilled: true,
+                phase: String::new(),
+                last_updated_turn: None,
             },
         );
         kept += 1;
@@ -835,6 +847,8 @@ async fn load_file(State(s): State<Shared>, Path(name): Path<String>) -> Respons
         attempts: 0,
         last_access: Some(std::time::Instant::now()),
         spilled: false,
+        phase: String::new(),
+        last_updated_turn: None,
     };
     s.jobs.lock().unwrap().insert(id, job);
     Json(serde_json::json!({ "job_id": id })).into_response()
@@ -846,7 +860,8 @@ async fn live_summary(State(s): State<Shared>, Path(id): Path<u64>) -> Response 
     let jobs = s.jobs.lock().unwrap();
     let Some(j) = jobs.get(&id) else { return (StatusCode::NOT_FOUND, "no such job").into_response() };
     let done: Vec<usize> = j.live.iter().enumerate().filter_map(|(i, t)| t.as_ref().map(|_| i)).collect();
-    let latest = done.last().copied();
+    let latest = j.last_updated_turn.or_else(|| done.last().copied());
+    let deepened = j.live.iter().filter(|t| t.as_ref().map_or(false, |x| x.deepened)).count();
     let series: Vec<serde_json::Value> = j
         .live
         .iter()
@@ -864,7 +879,10 @@ async fn live_summary(State(s): State<Shared>, Path(id): Path<u64>) -> Response 
     Json(serde_json::json!({
         "id": id,
         "total": j.turns_total,
-        "done": done.len(),
+        "done": j.turns_done.max(done.len()),
+        "positions_analysed": done.len(),
+        "deepened": deepened,
+        "phase": j.phase,
         "latest": latest,
         "series": series,
         "losses": losses,
@@ -1188,6 +1206,8 @@ pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Opti
         attempts: 0,
         last_access: Some(std::time::Instant::now()),
         spilled: false,
+        phase: String::new(),
+        last_updated_turn: None,
     };
     s.jobs.lock().unwrap().insert(id, job);
     spawn_job_task(s.clone(), id);
@@ -1260,15 +1280,19 @@ fn spawn_job_task(state: Shared, id: u64) {
                 jobs.get(&id).map(|j| j.partial.clone())
             };
             let st = state.clone();
-            let progress = move |done: usize, total: usize, turn: Option<&TurnEval>| {
+            let progress = move |done: usize, total: usize, turn: Option<&TurnEval>, phase: &str| {
                 if let Some(j) = st.jobs.lock().unwrap().get_mut(&id) {
                     j.state = JobState::Running { done, total };
                     j.turns_done = done;
                     j.turns_total = total;
+                    j.phase = phase.to_string();
                     if let Some(t) = turn {
                         if let Some(slot) = j.live.get_mut(t.turn) {
-                            *slot = Some(LiveTurn::from(t));
+                            let mut lt = LiveTurn::from(t);
+                            lt.deepened = slot.is_some(); // a second visit to this position is the deep pass
+                            *slot = Some(lt);
                         }
+                        j.last_updated_turn = Some(t.turn);
                         if let Some(slot) = j.partial.get_mut(t.turn) {
                             if slot.is_none() {
                                 *slot = Some(t.clone());

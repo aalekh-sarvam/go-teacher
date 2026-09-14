@@ -638,7 +638,7 @@ async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files
             ..Default::default()
         };
         let cancel = tokio_util::sync::CancellationToken::new();
-        let analysis = analysis::analyze_game(&engine, game, opts, cancel, None, |done, total, _| {
+        let analysis = analysis::analyze_game(&engine, game, opts, cancel, None, |done, total, _, _| {
             if done % 10 == 0 || done == total {
                 eprintln!("  {}/{} positions", done, total);
             }
