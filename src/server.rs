@@ -107,7 +107,13 @@ pub enum EngineState {
 
 pub struct AppState {
     pub engine: std::sync::RwLock<EngineState>,
-    pub engine_config: crate::katago::EngineConfig,
+    pub engine_config: std::sync::RwLock<crate::katago::EngineConfig>,
+    /// Where each engine file came from (flag, settings file, KaTrain, built-in).
+    pub engine_source: std::sync::RwLock<String>,
+    /// Command-line / environment overrides, re-applied on every engine (re)start.
+    pub cli_paths: crate::EnginePaths,
+    pub settings_path: PathBuf,
+    pub katrain_installed: bool,
     /// True when the UI is shown in the native window rather than a browser.
     pub windowed: bool,
     pub out_dir: PathBuf,
@@ -133,6 +139,8 @@ pub fn router(state: Shared) -> Router {
         .route("/", get(index))
         .route("/api/status", get(status))
         .route("/api/quit", post(quit))
+        .route("/api/settings", get(get_settings).post(save_settings))
+        .route("/api/engine/restart", post(restart_engine))
         .route("/api/open-out-dir", post(open_out_dir))
         .route("/api/jobs/:id/open", post(open_report))
         .route("/api/jobs/:id/reveal", post(reveal_report))
@@ -163,20 +171,89 @@ async fn status(State(s): State<Shared>) -> Json<serde_json::Value> {
         EngineState::Ready(e) => ("ready", e.is_alive(), e.version.clone(), String::new()),
         EngineState::Failed(msg) => ("failed", false, String::new(), msg.clone()),
     };
+    let cfg = s.engine_config.read().unwrap().clone();
     Json(serde_json::json!({
         "engine_state": state,
         "engine_alive": alive,
         "engine_version": version,
         "engine_error": error,
         "windowed": s.windowed,
-        "katago": s.engine_config.katago,
-        "model": s.engine_config.model,
-        "config": s.engine_config.config,
+        "katago": cfg.katago,
+        "model": cfg.model,
+        "config": cfg.config,
         "out_dir": s.out_dir,
-        "human_model": s.engine_config.human_model.is_some(),
+        "human_model": cfg.human_model.is_some(),
+        "human_model_path": cfg.human_model,
+        "engine_source": *s.engine_source.read().unwrap(),
+        "katrain_installed": s.katrain_installed,
+        "settings_path": s.settings_path,
         "human_profiles": HUMAN_PROFILES,
         "running_jobs": s.jobs.lock().unwrap().values().filter(|j| matches!(j.state, JobState::Running { .. } | JobState::Queued)).count(),
     }))
+}
+
+async fn get_settings(State(s): State<Shared>) -> Json<serde_json::Value> {
+    let saved = crate::load_settings();
+    let cfg = s.engine_config.read().unwrap().clone();
+    Json(serde_json::json!({
+        "path": s.settings_path,
+        "saved": saved,
+        "active": {
+            "katago": cfg.katago,
+            "model": cfg.model,
+            "config": cfg.config,
+            "human_model": cfg.human_model,
+        },
+        "source": *s.engine_source.read().unwrap(),
+    }))
+}
+
+/// Save engine paths. Empty strings clear a setting (back to automatic). Takes effect on relaunch.
+async fn save_settings(State(s): State<Shared>, Json(body): Json<serde_json::Value>) -> Response {
+    let mut saved = crate::load_settings();
+    let mut problems = Vec::new();
+    for (key, slot) in [
+        ("katago", &mut saved.katago),
+        ("model", &mut saved.model),
+        ("config", &mut saved.config),
+        ("human_model", &mut saved.human_model),
+    ] {
+        if let Some(v) = body.get(key) {
+            let t = v.as_str().unwrap_or("").trim();
+            if t.is_empty() {
+                *slot = None;
+            } else {
+                let p = PathBuf::from(t.replace('~', &std::env::var("HOME").unwrap_or_default()));
+                if !p.exists() {
+                    problems.push(format!("{}: {} does not exist", key, p.display()));
+                }
+                *slot = Some(p);
+            }
+        }
+    }
+    if !problems.is_empty() {
+        return (StatusCode::BAD_REQUEST, problems.join("; ")).into_response();
+    }
+    if let Some(dir) = s.settings_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    match serde_json::to_string_pretty(&saved).map_err(|e| e.to_string()).and_then(|t| std::fs::write(&s.settings_path, t).map_err(|e| e.to_string())) {
+        Ok(()) => {
+            tracing::info!("settings saved to {}", s.settings_path.display());
+            Json(serde_json::json!({ "saved": saved, "path": s.settings_path, "note": "Restarting the engine with the new files." })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
+    }
+}
+
+/// Re-resolve engine paths (settings file, KaTrain, built-in) and restart KataGo.
+async fn restart_engine(State(s): State<Shared>) -> Response {
+    let running = s.jobs.lock().unwrap().values().filter(|j| matches!(j.state, JobState::Running { .. } | JobState::Queued)).count();
+    if running > 0 {
+        return (StatusCode::CONFLICT, format!("{} analysis job(s) are running; cancel them first", running)).into_response();
+    }
+    crate::start_engine(s.clone(), tokio::runtime::Handle::current(), false);
+    StatusCode::NO_CONTENT.into_response()
 }
 
 async fn quit(State(s): State<Shared>) -> StatusCode {
@@ -583,7 +660,7 @@ async fn analyze(State(s): State<Shared>, mut multipart: Multipart) -> Response 
                         if !t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                             return (StatusCode::BAD_REQUEST, "invalid human profile").into_response();
                         }
-                        if s.engine_config.human_model.is_none() {
+                        if s.engine_config.read().unwrap().human_model.is_none() {
                             return (StatusCode::BAD_REQUEST, "human profile requested but no human model is loaded").into_response();
                         }
                         human_profile = Some(t);

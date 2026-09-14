@@ -37,6 +37,9 @@
   .banner.ok { background:#e5f3ea; color:#1f5a3c; }
   .banner.warn { background:#fbf1d6; color:#7a5a00; }
   .banner.err { background:#f9e2e2; color:#7a1f1f; }
+  .guide { margin-top:12px; padding:14px 18px; background:#fffaf0; border:1px solid #e6d9b8; border-radius:8px; }
+  .guide h2 { margin:0 0 8px; }
+  .guide li { margin-bottom:10px; }
   /* live viewer */
   .live { display:grid; grid-template-columns: minmax(280px, 560px) minmax(260px, 1fr); gap:18px; align-items:start; }
   @media (max-width: 760px) { .live { grid-template-columns: 1fr; } }
@@ -57,6 +60,7 @@
   .files td { font-size:13px; }
   .danger { color:var(--bad); }
   button.small { font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
+  input.path { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font:12px "SF Mono", Menlo, monospace; }
   button.small.danger { border-color:#d9a3a3; }
 </style>
 </head>
@@ -80,9 +84,41 @@
       </label>
     </div>
     <div id="banner" class="banner warn">Starting KataGo and loading the model… this can take a minute.</div>
+    <div id="guide" class="guide" hidden>
+      <h2>Go Teacher needs a Go engine</h2>
+      <p>Go Teacher analyses games with <b>KataGo</b>, which is not included in this download. Two ways to get it:</p>
+      <ol>
+        <li><b>Install KaTrain (recommended, 5 minutes).</b> KaTrain is a free Go program that ships with KataGo built in.
+          <a href="https://github.com/sanderland/katrain/releases" target="_blank" rel="noopener">Download KaTrain for macOS</a>, drag it into <code>/Applications</code>,
+          and open it once so it can set itself up. Then click <b>Retry</b> below: Go Teacher finds KaTrain's engine on its own.
+          <br><span class="status">Bonus: in KaTrain you can play against a human-like opponent of your own rank (Settings → Engine → Human-like model, using
+          <a href="https://github.com/lightvector/KataGo/releases" target="_blank" rel="noopener">KataGo's human-style network</a>). Go Teacher uses that same network
+          to tell you how typical each of your mistakes is for your level.</span></li>
+        <li><b>Already have KataGo?</b> Enter the paths to the executable and the network file in <b>Engine settings</b> below and click Save. The analysis config is built in.</li>
+      </ol>
+      <p><button class="btn" onclick="retryEngine()">Retry</button> <span class="status" id="guidemsg"></span></p>
+    </div>
     <p id="engine" class="status"></p>
     <p id="message" class="status"></p>
     <p class="status" id="quitline"></p>
+  </div>
+
+  <div class="card">
+    <h2>Engine settings</h2>
+    <p class="status" id="enginesource"></p>
+    <table>
+      <tbody>
+        <tr><th style="width:150px">KataGo executable</th><td><input class="path" id="s_katago" placeholder="automatic (KaTrain's engine)"></td></tr>
+        <tr><th>Network (model)</th><td><input class="path" id="s_model" placeholder="automatic (KaTrain's network)"></td></tr>
+        <tr><th>Analysis config</th><td><input class="path" id="s_config" placeholder="automatic (built-in config)"></td></tr>
+        <tr><th>Human-style network</th><td><input class="path" id="s_human" placeholder="automatic (KaTrain's human-like model, if set)"></td></tr>
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:8px">
+      <button class="small" onclick="saveSettings()">Save</button>
+      <button class="small" onclick="clearSettings()">Reset to automatic</button>
+      <span class="status" id="settingsmsg">Leave a field empty to detect automatically. Saving restarts the engine.</span>
+    </div>
   </div>
 
   <div class="card" id="livecard" hidden>
@@ -163,12 +199,16 @@ async function loadStatus() {
     if (s.engine_state === 'starting') {
       b.className = 'banner warn'; b.textContent = 'Starting KataGo and loading the model… this can take a minute. You will be notified when it is ready.';
     } else if (s.engine_state === 'failed') {
-      b.className = 'banner err'; b.textContent = 'KataGo failed to start: ' + s.engine_error + ' — fix the problem and relaunch Go Teacher.';
+      b.className = 'banner err'; b.textContent = 'KataGo could not start: ' + s.engine_error;
+      $('guide').hidden = false;
     } else if (!s.engine_alive) {
+      $('guide').hidden = false;
       b.className = 'banner err'; b.textContent = 'The KataGo process exited. Relaunch Go Teacher.';
     } else {
       b.className = 'banner ok'; b.textContent = 'KataGo is ready (' + s.engine_version + '). Upload a game to begin.';
+      $('guide').hidden = true;
     }
+    if (s.engine_state === 'starting') $('guide').hidden = true;
     if (wasReady === false && engineReady) document.title = 'go_teacher — ready';
     wasReady = engineReady;
     const folder = windowed
@@ -189,6 +229,36 @@ async function loadStatus() {
   } catch (e) {
     $('banner').className = 'banner err'; $('banner').textContent = 'Server unreachable';
   }
+}
+
+async function loadSettings() {
+  try {
+    const d = await (await fetch('/api/settings')).json();
+    const sv = d.saved || {};
+    $('s_katago').value = sv.katago || ''; $('s_model').value = sv.model || ''; $('s_config').value = sv.config || ''; $('s_human').value = sv.human_model || '';
+    const a = d.active;
+    $('enginesource').innerHTML = 'In use now — engine <code>' + esc(a.katago) + '</code>, network <code>' + esc(a.model) + '</code>, config <code>' + esc(a.config) + '</code>'
+      + (a.human_model ? ', human network <code>' + esc(a.human_model) + '</code>' : ', no human network')
+      + '.<br>Chosen from: ' + esc(d.source) + '. Settings file: <code>' + esc(d.path) + '</code>';
+  } catch (e) {}
+}
+async function saveSettings() {
+  const body = { katago: $('s_katago').value, model: $('s_model').value, config: $('s_config').value, human_model: $('s_human').value };
+  const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) { $('settingsmsg').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>'; return; }
+  $('settingsmsg').innerHTML = '<span class="ok">Saved.</span> Restarting the engine…';
+  await retryEngine();
+}
+async function retryEngine() {
+  const r = await fetch('/api/engine/restart', { method: 'POST' });
+  const msg = r.ok ? 'Restarting the engine…' : '<span class="err">' + esc(await r.text()) + '</span>';
+  $('guidemsg').innerHTML = msg; $('settingsmsg').innerHTML = msg;
+  engineReady = false;
+  setTimeout(() => { loadStatus(); loadSettings(); }, 800);
+}
+async function clearSettings() {
+  for (const id of ['s_katago', 's_model', 's_config', 's_human']) $(id).value = '';
+  await saveSettings();
 }
 
 async function openOutDir() { await fetch('/api/open-out-dir', { method: 'POST' }); }
@@ -573,6 +643,7 @@ async function loadJson(name) {
 
 // ------------------------------------------------------------------ polling
 loadStatus();
+loadSettings();
 loadJobs().then(refreshLive);
 setInterval(loadJobs, 1500);
 loadFiles();

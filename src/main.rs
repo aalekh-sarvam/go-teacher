@@ -13,24 +13,72 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-const DEFAULT_KATAGO: &str = "/opt/homebrew/bin/katago";
-const DEFAULT_MODEL: &str = "/Users/aalekhsharan/.katago/default_model.bin.gz";
-const DEFAULT_CONFIG: &str = "/Users/aalekhsharan/.katago/default_analysis.cfg";
-const DEFAULT_HUMAN_MODEL: &str = "/Users/aalekhsharan/.katago/default_human_model.bin.gz";
+/// Engine locations tried in order when no flag / environment variable is given:
+/// 1. whatever KaTrain is configured to use (`~/.katrain/config.json`, section `engine`),
+/// 2. the engine, network and config bundled inside KaTrain.app (its own default config),
+/// 3. a hand-installed KataGo (`brew install katago`) with networks in `~/.katago`.
+const BREW_KATAGO: &str = "/opt/homebrew/bin/katago";
+
+/// The analysis config shipped inside the binary (Metal mux settings, 500 visits). Written to the
+/// settings directory on first run and used whenever no config is given.
+const EMBEDDED_ANALYSIS_CFG: &str = include_str!("../resources/analysis.cfg");
+
+/// Persistent settings: `~/Library/Application Support/GoTeacher/settings.json`.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Settings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub katago: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub human_model: Option<PathBuf>,
+}
+
+pub fn settings_dir() -> PathBuf {
+    home().join("Library/Application Support/GoTeacher")
+}
+
+pub fn settings_path() -> PathBuf {
+    settings_dir().join("settings.json")
+}
+
+pub fn load_settings() -> Settings {
+    std::fs::read_to_string(settings_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+/// Make sure the embedded analysis config exists on disk and return its path.
+fn default_config_path() -> Result<PathBuf> {
+    let dir = settings_dir();
+    std::fs::create_dir_all(&dir)?;
+    let log_dir = dir.join("katago_logs");
+    std::fs::create_dir_all(&log_dir)?;
+    let path = dir.join("analysis.cfg");
+    let rendered = EMBEDDED_ANALYSIS_CFG.replace("{{LOG_DIR}}", &log_dir.display().to_string());
+    // Rewrite when missing or when a newer build changed the embedded config.
+    if std::fs::read_to_string(&path).map(|cur| cur != rendered).unwrap_or(true) {
+        std::fs::write(&path, rendered)?;
+    }
+    Ok(path)
+}
 
 /// Analyze Go games (SGF) move by move with KataGo and write a teaching report.
 #[derive(Parser, Debug)]
 #[command(name = "go_teacher", version, about)]
 struct Cli {
-    /// Path to the KataGo executable.
-    #[arg(long, default_value = DEFAULT_KATAGO, env = "GO_TEACHER_KATAGO")]
-    katago: PathBuf,
-    /// Path to the KataGo neural-network model.
-    #[arg(long, default_value = DEFAULT_MODEL, env = "GO_TEACHER_MODEL")]
-    model: PathBuf,
-    /// Path to the KataGo analysis config.
-    #[arg(long, default_value = DEFAULT_CONFIG, env = "GO_TEACHER_CONFIG")]
-    config: PathBuf,
+    /// Path to the KataGo executable (default: /opt/homebrew/bin/katago, else KaTrain's bundled engine).
+    #[arg(long, env = "GO_TEACHER_KATAGO")]
+    katago: Option<PathBuf>,
+    /// Path to the KataGo neural-network model (default: ~/.katago/default_model.bin.gz, else KaTrain's).
+    #[arg(long, env = "GO_TEACHER_MODEL")]
+    model: Option<PathBuf>,
+    /// Path to the KataGo analysis config (default: ~/.katago/default_analysis.cfg, else KaTrain's).
+    #[arg(long, env = "GO_TEACHER_CONFIG")]
+    config: Option<PathBuf>,
     /// Path to KataGo's human-style network, used for human policy heat maps
     /// (default: ~/.katago/default_human_model.bin.gz if it exists).
     #[arg(long, env = "GO_TEACHER_HUMAN_MODEL")]
@@ -77,6 +125,152 @@ enum Command {
         #[arg(long)]
         student: Option<String>,
     },
+}
+
+fn existing(p: PathBuf) -> Option<PathBuf> {
+    if p.exists() { Some(p) } else { None }
+}
+
+/// KaTrain.app's resource directory, if KaTrain is installed.
+fn katrain_resources() -> Option<PathBuf> {
+    ["/Applications/KaTrain.app", &format!("{}/Applications/KaTrain.app", home().display())]
+        .iter()
+        .map(|a| PathBuf::from(a).join("Contents/Resources"))
+        .find(|p| p.join("katrain").is_dir())
+}
+
+#[derive(Default, Debug)]
+struct KatrainEngine {
+    katago: Option<PathBuf>,
+    model: Option<PathBuf>,
+    config: Option<PathBuf>,
+    human_model: Option<PathBuf>,
+    source: &'static str,
+}
+
+/// Read the `engine` section of a KaTrain config.json. Relative paths such as
+/// `katrain/models/x.bin.gz` are inside KaTrain.app's resources; an empty `katago` means the
+/// bundled executable.
+fn read_katrain_config(path: &std::path::Path, res: Option<&PathBuf>) -> Option<KatrainEngine> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let eng = v.get("engine")?;
+    let resolve = |key: &str| -> Option<PathBuf> {
+        let raw = eng.get(key)?.as_str()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        let raw = raw.replace('~', &home().display().to_string());
+        let p = PathBuf::from(&raw);
+        if p.is_absolute() {
+            return existing(p);
+        }
+        existing(res?.join(&raw))
+    };
+    let bundled_bin = res.map(|r| r.join("katrain/KataGo/katago-osx")).and_then(existing);
+    Some(KatrainEngine {
+        katago: resolve("katago").or(bundled_bin),
+        model: resolve("model"),
+        config: resolve("config"),
+        human_model: resolve("humanlike_model"),
+        source: "",
+    })
+}
+
+/// KaTrain's engine: the user's KaTrain settings first, then KaTrain's shipped defaults.
+fn katrain_engine() -> Option<KatrainEngine> {
+    let res = katrain_resources();
+    let mut user = read_katrain_config(&home().join(".katrain/config.json"), res.as_ref()).unwrap_or_default();
+    let bundled = res
+        .as_ref()
+        .and_then(|r| read_katrain_config(&r.join("katrain/config.json"), Some(r)))
+        .unwrap_or_default();
+    let from_user = user.katago.is_some() || user.model.is_some() || user.config.is_some();
+    user.katago = user.katago.or(bundled.katago);
+    user.model = user.model.or(bundled.model);
+    user.config = user.config.or(bundled.config);
+    user.human_model = user.human_model.or(bundled.human_model);
+    if user.katago.is_none() && user.model.is_none() && user.config.is_none() {
+        return None;
+    }
+    user.source = if from_user { "the engine configured in KaTrain (~/.katrain/config.json)" } else { "KaTrain's bundled KataGo" };
+    Some(user)
+}
+
+/// Engine paths given on the command line / environment (kept so the engine can be re-resolved
+/// after the user edits the settings without relaunching).
+#[derive(Debug, Clone, Default)]
+pub struct EnginePaths {
+    pub katago: Option<PathBuf>,
+    pub model: Option<PathBuf>,
+    pub config: Option<PathBuf>,
+    pub human_model: Option<PathBuf>,
+    pub no_human_model: bool,
+}
+
+impl EnginePaths {
+    fn from_cli(cli: &Cli) -> EnginePaths {
+        EnginePaths {
+            katago: cli.katago.clone(),
+            model: cli.model.clone(),
+            config: cli.config.clone(),
+            human_model: cli.human_model.clone(),
+            no_human_model: cli.no_human_model,
+        }
+    }
+}
+
+/// Pick engine files. For each file, in order: flag / environment variable, the settings file,
+/// then the fallbacks: executable and network from KaTrain (its settings, then its bundle) or a
+/// Homebrew KataGo with `~/.katago`; the analysis config always defaults to the embedded one.
+pub fn resolve_engine(cli: &EnginePaths) -> (katago::EngineConfig, String) {
+    let own = home().join(".katago");
+    let saved = load_settings();
+    let kt = katrain_engine().unwrap_or_default();
+    let mut sources: Vec<String> = Vec::new();
+    let kt_label = if kt.source.contains("bundled") { "KaTrain bundle" } else { "KaTrain settings" };
+
+    let pick = |flag: &Option<PathBuf>, saved_p: &Option<PathBuf>, fallbacks: &[Option<PathBuf>], what: &str, sources: &mut Vec<String>| -> Option<PathBuf> {
+        if let Some(p) = flag {
+            sources.push(format!("{}: flag/env", what));
+            return Some(p.clone());
+        }
+        if let Some(p) = saved_p {
+            sources.push(format!("{}: settings.json", what));
+            return Some(p.clone());
+        }
+        for (i, f) in fallbacks.iter().enumerate() {
+            if let Some(p) = f.clone().and_then(existing) {
+                sources.push(format!("{}: {}", what, [kt_label, "KaTrain bundle", "~/.katago"][i.min(2)]));
+                return Some(p);
+            }
+        }
+        None
+    };
+    let res = katrain_resources();
+    let katago_bin = pick(
+        &cli.katago,
+        &saved.katago,
+        &[kt.katago.clone(), res.as_ref().map(|r| r.join("katrain/KataGo/katago-osx")), Some(PathBuf::from(BREW_KATAGO))],
+        "engine",
+        &mut sources,
+    )
+    .unwrap_or_else(|| PathBuf::from(BREW_KATAGO));
+    let model = pick(&cli.model, &saved.model, &[kt.model.clone(), None, Some(own.join("default_model.bin.gz"))], "network", &mut sources)
+        .unwrap_or_else(|| own.join("default_model.bin.gz"));
+    let config = match pick(&cli.config, &saved.config, &[], "config", &mut sources) {
+        Some(p) => p,
+        None => {
+            sources.push("config: built-in default".to_string());
+            default_config_path().unwrap_or_else(|_| own.join("default_analysis.cfg"))
+        }
+    };
+    let human_model = if cli.no_human_model {
+        None
+    } else {
+        pick(&cli.human_model, &saved.human_model, &[kt.human_model.clone(), None, Some(own.join("default_human_model.bin.gz"))], "human network", &mut sources)
+    };
+    (katago::EngineConfig { katago: katago_bin, model, config, human_model }, sources.join(", "))
 }
 
 /// True when the executable lives inside a `.app` bundle (launched from Finder / Dock).
@@ -129,24 +323,10 @@ fn main() -> Result<()> {
     if as_app {
         tracing::info!("launched as an app bundle");
     }
-    let human_model = if cli.no_human_model {
-        None
-    } else {
-        cli.human_model.clone().or_else(|| {
-            let p = PathBuf::from(DEFAULT_HUMAN_MODEL);
-            if p.exists() {
-                Some(p)
-            } else {
-                None
-            }
-        })
-    };
-    let engine_cfg = katago::EngineConfig {
-        katago: cli.katago.clone(),
-        model: cli.model.clone(),
-        config: cli.config.clone(),
-        human_model,
-    };
+    let paths = EnginePaths::from_cli(&cli);
+    let (engine_cfg, source) = resolve_engine(&paths);
+    eprintln!("Engine: {}", source);
+    tracing::info!("engine: {} ({} / {} / {})", source, engine_cfg.katago.display(), engine_cfg.model.display(), engine_cfg.config.display());
     let out_dir = cli.out_dir.clone().unwrap_or_else(|| {
         if as_app {
             home().join("Documents/GoTeacher")
@@ -158,7 +338,7 @@ fn main() -> Result<()> {
 
     let runtime = tokio::runtime::Runtime::new()?;
     match cli.command.unwrap_or(Command::Serve) {
-        Command::Serve => serve(runtime, engine_cfg, out_dir, cli.port, cli.no_open, !cli.browser),
+        Command::Serve => serve(runtime, paths, out_dir, cli.port, cli.no_open, !cli.browser),
         Command::Analyze { files, visits, human_profile, student } => {
             let student = match student.as_deref().map(|s| s.trim().to_ascii_uppercase()) {
                 None => None,
@@ -197,7 +377,50 @@ fn alert(title: &str, message: &str) {
     let _ = std::process::Command::new("osascript").arg("-e").arg(script).status();
 }
 
-fn serve(runtime: tokio::runtime::Runtime, engine_cfg: katago::EngineConfig, out_dir: PathBuf, port: u16, no_open: bool, windowed: bool) -> Result<()> {
+/// (Re)start KataGo in the background using the current settings. Safe to call again after the
+/// user changed the engine paths; a running engine is stopped first.
+pub fn start_engine(state: Arc<server::AppState>, handle: tokio::runtime::Handle, notify: bool) {
+    let (engine_cfg, source) = resolve_engine(&state.cli_paths);
+    if let Some(old) = state.engine() {
+        old.shutdown();
+    }
+    *state.engine_config.write().unwrap() = engine_cfg.clone();
+    *state.engine_source.write().unwrap() = source.clone();
+    *state.engine.write().unwrap() = server::EngineState::Starting;
+    let cancel = state.shutdown.clone();
+    eprintln!("Engine: {}", source);
+    eprintln!("Starting KataGo ({}) — loading the model can take a little while...", engine_cfg.katago.display());
+    tracing::info!("starting KataGo: {} ({} / {} / {})", source, engine_cfg.katago.display(), engine_cfg.model.display(), engine_cfg.config.display());
+    handle.spawn(async move {
+        let result = match engine_cfg.validate() {
+            Ok(()) => katago::Engine::spawn(engine_cfg, cancel.clone()).await,
+            Err(e) => Err(e),
+        };
+        if cancel.is_cancelled() {
+            if let Ok(engine) = &result {
+                engine.shutdown();
+            }
+            return;
+        }
+        let mut slot = state.engine.write().unwrap();
+        match result {
+            Ok(engine) => {
+                eprintln!("KataGo ready");
+                *slot = server::EngineState::Ready(engine);
+                if notify {
+                    notify_ready();
+                }
+            }
+            Err(e) => {
+                tracing::error!("KataGo failed to start: {}", e);
+                eprintln!("KataGo failed to start: {}", e);
+                *slot = server::EngineState::Failed(e.to_string());
+            }
+        }
+    });
+}
+
+fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf, port: u16, no_open: bool, windowed: bool) -> Result<()> {
     let addr = format!("127.0.0.1:{}", port);
     let url = format!("http://{}", addr);
 
@@ -226,9 +449,14 @@ fn serve(runtime: tokio::runtime::Runtime, engine_cfg: katago::EngineConfig, out
     };
 
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let (engine_cfg, source) = resolve_engine(&paths);
     let state = Arc::new(server::AppState {
         engine: std::sync::RwLock::new(server::EngineState::Starting),
-        engine_config: engine_cfg.clone(),
+        engine_config: std::sync::RwLock::new(engine_cfg),
+        engine_source: std::sync::RwLock::new(source),
+        cli_paths: paths,
+        settings_path: settings_path(),
+        katrain_installed: katrain_resources().is_some(),
         windowed,
         out_dir: out_dir.clone(),
         jobs: Mutex::new(Default::default()),
@@ -250,41 +478,8 @@ fn serve(runtime: tokio::runtime::Runtime, engine_cfg: katago::EngineConfig, out
         });
     }
 
-    // Load KataGo in the background.
-    {
-        let state = state.clone();
-        let cancel = shutdown.clone();
-        let notify = windowed || running_as_app();
-        eprintln!("Starting KataGo ({}) — loading the model can take a little while...", engine_cfg.katago.display());
-        tracing::info!("starting KataGo at {}", engine_cfg.katago.display());
-        runtime.spawn(async move {
-            let result = match engine_cfg.validate() {
-                Ok(()) => katago::Engine::spawn(engine_cfg, cancel.clone()).await,
-                Err(e) => Err(e),
-            };
-            if cancel.is_cancelled() {
-                if let Ok(engine) = &result {
-                    engine.shutdown();
-                }
-                return;
-            }
-            let mut slot = state.engine.write().unwrap();
-            match result {
-                Ok(engine) => {
-                    eprintln!("KataGo ready");
-                    *slot = server::EngineState::Ready(engine);
-                    if notify {
-                        notify_ready();
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("KataGo failed to start: {}", e);
-                    eprintln!("KataGo failed to start: {}", e);
-                    *slot = server::EngineState::Failed(e.to_string());
-                }
-            }
-        });
-    }
+    // Load KataGo in the background; the page shows the setup guide if nothing is found.
+    start_engine(state.clone(), runtime.handle().clone(), windowed || running_as_app());
 
     eprintln!("go_teacher UI: {}", url);
     eprintln!("Reports are written to {}", out_dir.display());

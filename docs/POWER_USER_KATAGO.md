@@ -1,8 +1,15 @@
-# Installing KataGo on a Mac (Metal) and pointing Go Teacher at it
+# Power users: a faster, stronger KataGo for Go Teacher
 
-Go Teacher does not ship an engine. It drives a locally installed KataGo through its JSON
-analysis protocol. This guide sets up KataGo with the Metal backend (Apple GPU plus the
-Neural Engine) on Apple Silicon and tells Go Teacher where everything is.
+Out of the box Go Teacher uses whatever engine KaTrain uses, which for a fresh KaTrain install
+is KataGo with the OpenCL backend and a small network. That is fine for reviews but leaves a
+lot on the table on Apple Silicon. This guide installs KataGo with the **Metal backend**
+(Apple GPU plus the Neural Engine), the strongest current network, and the human-style
+network that powers the human policy heat maps. Expect several times the speed at the same
+visits, or the same speed with a much stronger network.
+
+Once done, either point **KaTrain** at the new files in its Engine settings (Go Teacher reads
+KaTrain's settings, so both programs switch together) or enter them in Go Teacher's own
+Engine settings card, which takes precedence over KaTrain.
 
 ## 1. Install KataGo
 
@@ -91,16 +98,21 @@ example) slow this down noticeably.
 
 ## 4. Point Go Teacher at the files
 
-With the paths above nothing needs configuring: the defaults are
+Either enter the paths in Go Teacher's **Engine settings** card (saved to
+`~/Library/Application Support/GoTeacher/settings.json`; saving restarts the engine), or in KaTrain's Settings → Engine
+(saved to `~/.katrain/config.json`, which Go Teacher also reads). Precedence, per file:
 
-| Setting | Default |
+| Priority | Source |
 |---|---|
-| KataGo executable | `/opt/homebrew/bin/katago` |
-| Main network | `~/.katago/default_model.bin.gz` |
-| Analysis config | `~/.katago/default_analysis.cfg` |
-| Human network | `~/.katago/default_human_model.bin.gz` (if present) |
+| 1 | flags or `GO_TEACHER_*` environment variables |
+| 2 | Go Teacher's `settings.json` |
+| 3 | KaTrain's settings (`~/.katrain/config.json`, section `engine`) — engine, network, human network only |
+| 4 | the engine and network bundled inside KaTrain.app |
+| 5 | `/opt/homebrew/bin/katago`, `~/.katago/default_model.bin.gz`, `~/.katago/default_human_model.bin.gz` |
 
-To use other locations, either pass flags:
+The analysis config never comes from KaTrain: without a setting Go Teacher uses its built-in
+config (the one in this guide), written to `~/Library/Application Support/GoTeacher/analysis.cfg`.
+To use other locations from the command line, either pass flags:
 
 ```
 go_teacher --katago /path/to/katago --model /path/to/net.bin.gz --config /path/to/analysis.cfg \
@@ -117,9 +129,8 @@ export GO_TEACHER_CONFIG=/path/to/analysis.cfg
 export GO_TEACHER_HUMAN_MODEL=/path/to/b18c384nbt-humanv0.bin.gz
 ```
 
-Note that the defaults are compiled into the binary from the paths on the build machine;
-if you build on a different account, edit the `DEFAULT_*` constants at the top of
-`src/main.rs` or rely on the environment variables.
+Go Teacher prints which setup it chose on startup ("Engine: ...") and the app's log
+(`~/Library/Logs/GoTeacher.log`) records the exact paths.
 
 ## 5. Verify from Go Teacher
 
