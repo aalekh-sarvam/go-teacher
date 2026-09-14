@@ -59,6 +59,14 @@ pub struct Candidate {
     pub prior: f64,
     pub order: usize,
     pub pv: Vec<String>,
+    /// KataGo's combined winrate+score utility (Black perspective), used for human-style move choice.
+    #[serde(default)]
+    pub utility: f64,
+    #[serde(default)]
+    pub lcb: f64,
+    /// Ownership prediction after this move (row-major from the top-left), when requested.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<Vec<f32>>,
 }
 
 /// KataGo's evaluation of the position *before* move `turn + 1` is played
@@ -271,13 +279,33 @@ fn move_string(game: &GameRecord, m: &crate::sgf::Move) -> String {
     }
 }
 
-/// Query analysing only `turns`, at `max_visits` (None = config default).
-pub fn build_query_for(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOptions, turns: &[usize], max_visits: Option<u64>) -> Value {
-    let moves: Vec<Value> = game
+/// Optional per-query extras for probe searches.
+#[derive(Debug, Clone, Default)]
+pub struct QueryExtras {
+    /// Restrict both players to these moves (GTP, may include "pass") for `allow_depth` plies.
+    pub allow_moves: Option<Vec<String>>,
+    pub allow_depth: u32,
+    /// Ask for an ownership map per candidate move.
+    pub include_moves_ownership: bool,
+    /// Human profile for this query (overrides opts.human_profile; None keeps it).
+    pub human_profile: Option<String>,
+    /// KataGo query priority (higher first).
+    pub priority: i32,
+    /// Analyse the game record with these extra moves appended (alternating from the side to move).
+    pub extra_moves: Vec<(Color, Option<crate::sgf::Coord>)>,
+}
+
+/// Query analysing only `turns`, at `max_visits` (None = config default), with probe extras.
+pub fn build_query_ext(game: &GameRecord, rules: &str, komi: f64, opts: &AnalysisOptions, turns: &[usize], max_visits: Option<u64>, extras: &QueryExtras) -> Value {
+    let mut moves: Vec<Value> = game
         .moves
         .iter()
         .map(|m| serde_json::json!([m.color.letter(), move_string(game, m)]))
         .collect();
+    for (color, point) in &extras.extra_moves {
+        let mv = point.map(|p| p.to_gtp(game.size_y)).unwrap_or_else(|| "pass".to_string());
+        moves.push(serde_json::json!([color.letter(), mv]));
+    }
     let mut initial: Vec<Value> = Vec::new();
     for c in &game.setup_black {
         initial.push(serde_json::json!(["B", c.to_gtp(game.size_y)]));
@@ -300,8 +328,21 @@ pub fn build_query_for(game: &GameRecord, rules: &str, komi: f64, opts: &Analysi
     if let Some(v) = max_visits {
         q["maxVisits"] = Value::from(v);
     }
-    if let Some(p) = &opts.human_profile {
+    if let Some(p) = extras.human_profile.as_ref().or(opts.human_profile.as_ref()) {
         q["overrideSettings"] = serde_json::json!({ "humanSLProfile": p });
+    }
+    if extras.include_moves_ownership {
+        q["includeMovesOwnership"] = Value::Bool(true);
+    }
+    if extras.priority != 0 {
+        q["priority"] = Value::from(extras.priority);
+    }
+    if let Some(list) = &extras.allow_moves {
+        let depth = extras.allow_depth.max(1);
+        q["allowMoves"] = serde_json::json!([
+            { "player": "B", "moves": list, "untilDepth": depth },
+            { "player": "W", "moves": list, "untilDepth": depth },
+        ]);
     }
     q
 }
@@ -350,6 +391,9 @@ fn parse_turn(v: &Value, game: &GameRecord, opts: &AnalysisOptions) -> Result<Tu
                         score_lead: f(mi, "scoreLead").or_else(|| f(mi, "scoreMean"))?,
                         prior: f(mi, "prior").unwrap_or(0.0),
                         order: mi.get("order").and_then(|x| x.as_u64()).unwrap_or(0) as usize,
+                        utility: f(mi, "utility").unwrap_or(0.0),
+                        lcb: f(mi, "lcb").unwrap_or(0.0),
+                        ownership: float_array(mi, "ownership"),
                         pv: mi
                             .get("pv")
                             .and_then(|p| p.as_array())
@@ -490,12 +534,29 @@ async fn run_query(
     max_visits: Option<u64>,
     cancel: &CancellationToken,
     warnings: &mut Vec<String>,
+    on_turn: impl FnMut(&TurnEval),
+) -> Result<Vec<TurnEval>> {
+    run_query_ext(engine, game, rules, komi, opts, turns, max_visits, &QueryExtras::default(), cancel, warnings, on_turn).await
+}
+
+/// `run_query` with probe extras (restricted moves, per-move ownership, profile, priority, extra moves).
+pub async fn run_query_ext(
+    engine: &Engine,
+    game: &GameRecord,
+    rules: &str,
+    komi: f64,
+    opts: &AnalysisOptions,
+    turns: &[usize],
+    max_visits: Option<u64>,
+    extras: &QueryExtras,
+    cancel: &CancellationToken,
+    warnings: &mut Vec<String>,
     mut on_turn: impl FnMut(&TurnEval),
 ) -> Result<Vec<TurnEval>> {
     if turns.is_empty() {
         return Ok(Vec::new());
     }
-    let query = build_query_for(game, rules, komi, opts, turns, max_visits);
+    let query = build_query_ext(game, rules, komi, opts, turns, max_visits, extras);
     let (id, mut rx) = engine.query(query).await?;
     let mut out: Vec<TurnEval> = Vec::with_capacity(turns.len());
     let wanted: std::collections::HashSet<usize> = turns.iter().copied().collect();

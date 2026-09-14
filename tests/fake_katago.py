@@ -31,15 +31,32 @@ for line in sys.stdin:
     sx, sy = q.get("boardXSize", 19), q.get("boardYSize", 19)
     moves = q.get("moves", [])
     n = sx * sy
+    # allowMoves: restrict candidates to the listed moves for the side to move (local searches)
+    allow = {d.get("player"): set(d.get("moves", [])) for d in (q.get("allowMoves") or [])}
+    occupied = {m[1] for m in moves if m[1] != "pass"}
     for turn in q.get("analyzeTurns", [len(moves)]):
-        to_move = "B" if (turn % 2 == 0) else "W"
+        # side to move follows the actual move list (passes included); initialPlayer for turn 0
+        if turn == 0:
+            to_move = q.get("initialPlayer", "B")
+        else:
+            prev = moves[turn - 1][0] if turn - 1 < len(moves) else ("B" if turn % 2 == 1 else "W")
+            to_move = "W" if prev == "B" else "B"
         wr = 0.5 + 0.3 * math.sin(turn / 3.0)
+        # a pass by the side that just moved costs it points (so pass-value probes are meaningful)
+        if turn >= 1 and turn - 1 < len(moves) and moves[turn - 1][1] == "pass":
+            wr += -0.08 if moves[turn - 1][0] == "B" else 0.08
         lead = (wr - 0.5) * 30
         cands = []
-        for i, mv in enumerate(cand_moves(sx, sy, turn)):
-            cands.append({"move": mv, "visits": max(1, 100 - 30 * i), "winrate": max(0.01, min(0.99, wr - 0.02 * i)),
-                          "scoreLead": lead - 1.5 * i, "scoreMean": lead - 1.5 * i, "prior": 0.4 / (i + 1), "order": i,
-                          "pv": cand_moves(sx, sy, turn + 1 + i)[:4]})
+        pool = [m for m in cand_moves(sx, sy, turn) if m not in occupied] or cand_moves(sx, sy, turn)
+        if to_move in allow:
+            pool = [m for m in sorted(allow[to_move]) if m != "pass"][:6] or pool
+        for i, mv in enumerate(pool):
+            c = {"move": mv, "visits": max(1, 100 - 30 * i), "winrate": max(0.01, min(0.99, wr - 0.02 * i)),
+                 "scoreLead": lead - 1.5 * i, "scoreMean": lead - 1.5 * i, "prior": 0.4 / (i + 1), "order": i,
+                 "pv": cand_moves(sx, sy, turn + 1 + i)[:4], "utility": (wr - 0.5) * 2 - 0.05 * i}
+            if q.get("includeMovesOwnership"):
+                c["ownership"] = [round(math.tanh((k % sx - sx / 2 + i) / 4.0), 3) for k in range(n)]
+            cands.append(c)
         if turn < len(moves):
             played = moves[turn][1]
             if played not in [c["move"] for c in cands] and played != "pass":
