@@ -1042,6 +1042,7 @@ dependencies = [
  "axum",
  "chrono",
  "clap",
+ "flate2",
  "muda",
  "pulldown-cmark",
  "serde",

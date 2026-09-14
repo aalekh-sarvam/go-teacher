@@ -3,58 +3,75 @@
 Analyze Go game records (SGF) move by move with a local KataGo engine and produce a long
 Markdown report that an AI teaching agent can read to give stylistic feedback on mistakes.
 
-## Getting started (no Go software installed yet)
+## Setup (one time, about 15 minutes)
 
-Go Teacher needs the KataGo engine and a neural network. The easiest way to get both is to
-install **KaTrain**, a free Go client that ships with KataGo built in:
+Go Teacher analyses games with the **KataGo** engine and shares its engine setup with
+**KaTrain**, a free Go program you can also play against. Everyone follows the same steps;
+there is no separate "power user" path. When Go Teacher cannot find an engine it shows this
+guide inside the app, with a Retry button.
 
-1. Download KaTrain for macOS from <https://github.com/sanderland/katrain/releases> (or run
-   `brew install --cask katrain`) and drag it into `/Applications`. Open it once: the first
-   start takes a minute while KataGo tunes itself for your GPU.
-2. Open the Go Teacher DMG and drag **Go Teacher** into `/Applications`.
-3. Launch Go Teacher. It finds KaTrain's engine and network by itself, shows
-   "KataGo is ready", and you can upload an SGF file.
+1. **Install KaTrain.** Download it from <https://github.com/sanderland/katrain/releases>
+   (or `brew install --cask katrain`), drag it into `/Applications`, open it once. KaTrain
+   works right away with a small built-in engine; the following steps make it several times
+   faster and much stronger, and Go Teacher will use the same setup.
+2. **Install KataGo with the Metal backend**, which uses the Apple GPU and Neural Engine
+   (needs [Homebrew](https://brew.sh)):
 
-If you launch Go Teacher before installing KaTrain, the window shows this guide with a
-Retry button instead; nothing else needs relaunching.
+   ```
+   brew install katago
+   katago version        # must print "Using Metal backend"
+   mkdir -p ~/.katago
+   ```
 
-That is all. Go Teacher brings its own analysis configuration (500 visits per move, tuned for
-Apple Silicon), so nothing needs editing.
+3. **Download the latest network.** On <https://katagotraining.org/networks/> take the newest
+   *transformer* network (names start with `b11c768h12nbt` or newer) and save it as
+   `~/.katago/default_model.bin.gz`.
+4. **Download the human-style network.** Get `b18c384nbt-humanv0.bin.gz` from
+   <https://github.com/lightvector/KataGo/releases> (attached to v1.15.0 and later) and save
+   it as `~/.katago/default_human_model.bin.gz`. This network imitates players of a chosen
+   rank, 20 kyu to 9 dan. In KaTrain it gives you an opponent at your own level (New Game →
+   AI strategy **Human-like**, rank in Settings → AI), which is far more instructive than
+   losing to full-strength KataGo. In Go Teacher it powers the human policy heat map and the
+   "a player of your rank makes this move 30% of the time" facts in the report.
+5. **Tell KaTrain.** Settings → Engine: executable `/opt/homebrew/bin/katago`, model
+   `~/.katago/default_model.bin.gz`, human-like model `~/.katago/default_human_model.bin.gz`.
+   Leave the config field alone unless you have your own analysis config. Save.
+6. **Install and launch Go Teacher** from the DMG. It reads KaTrain's engine settings, starts
+   the same engine, and the green banner reports the KataGo version, **Metal backend** and the
+   network name. If the banner says OpenCL, the engine in use is KaTrain's built-in one: finish
+   steps 2 to 5.
 
-### Play against a human-like opponent, and get human-level teaching
+### Where the engine files come from
 
-KaTrain can play you with KataGo's **human-style network**, which imitates players of a chosen
-rank (20 kyu to 9 dan) instead of playing perfect moves. Games against it are far more
-instructive than games against full-strength KataGo, and Go Teacher uses the same network to
-tell you *how often a player of your level makes the mistake you made* and what a stronger
-player would do instead. Setting it up takes two minutes:
+Go Teacher resolves each file separately, in this order:
 
-1. Download `b18c384nbt-humanv0.bin.gz` from <https://github.com/lightvector/KataGo/releases>
-   (attached to release v1.15.0 and later) and save it somewhere permanent, e.g.
-   `~/.katago/default_human_model.bin.gz`.
-2. In KaTrain: Settings → Engine → "Human-like model", pick that file. Then in New Game choose
-   the **Human-like** AI strategy and set its rank in Settings → AI.
-3. Go Teacher picks the same file up from KaTrain's settings automatically; the "Human policy
-   profile" selector appears in its upload form.
-
-### Using your own KataGo, network or config
-
-Every engine file can be set individually, in the **Engine settings** card of the app (saved to
-`~/Library/Application Support/GoTeacher/settings.json`; saving restarts the engine), or on the
-command line:
-
-| File | Flag / environment variable | If not set |
+| File | Flag / environment variable | Then |
 |---|---|---|
-| KataGo executable | `--katago`, `GO_TEACHER_KATAGO` | KaTrain's configured engine, else the one bundled in KaTrain.app, else `/opt/homebrew/bin/katago` |
-| Network | `--model`, `GO_TEACHER_MODEL` | KaTrain's configured network, else KaTrain's bundled one, else `~/.katago/default_model.bin.gz` |
-| Analysis config | `--config`, `GO_TEACHER_CONFIG` | the built-in config, written to `~/Library/Application Support/GoTeacher/analysis.cfg` (edit it there, or delete it to restore the default) |
-| Human-style network | `--human-model`, `GO_TEACHER_HUMAN_MODEL`; `--no-human-model` to disable | KaTrain's human-like model, else `~/.katago/default_human_model.bin.gz`, else none |
+| KataGo executable | `--katago`, `GO_TEACHER_KATAGO` | Engine settings card → KaTrain's settings → KaTrain's bundled engine → `/opt/homebrew/bin/katago` |
+| Network | `--model`, `GO_TEACHER_MODEL` | Engine settings card → KaTrain's settings → KaTrain's bundled network → `~/.katago/default_model.bin.gz` |
+| Analysis config | `--config`, `GO_TEACHER_CONFIG` | Engine settings card → a config you set in KaTrain → the built-in config (Metal, 500 visits), written to `~/Library/Application Support/GoTeacher/analysis.cfg` |
+| Human-style network | `--human-model`, `GO_TEACHER_HUMAN_MODEL`; `--no-human-model` disables | Engine settings card → KaTrain's human-like model → `~/.katago/default_human_model.bin.gz` → none |
 
-Stronger networks than the one KaTrain bundles are free to download from
-<https://katagotraining.org/networks/>; point the Network setting at the downloaded file. Go
-Teacher prints where each file came from on startup ("Engine: ...") and shows it in the
-Engine settings card. For the fastest setup on Apple Silicon (Homebrew KataGo with the Metal
-backend, top network, human network) follow [docs/POWER_USER_KATAGO.md](docs/POWER_USER_KATAGO.md).
+The **Engine settings** card in the app overrides KaTrain for people who do not use it; saving
+restarts the engine. The startup line `Engine: ...` and the card show which source was used.
+
+### Sharing the GPU with KaTrain
+
+KaTrain and Go Teacher each start their own KataGo process. A second program cannot attach to
+the engine KaTrain already launched (it talks to KataGo over a private pipe), so when both run
+with the same network the network is loaded twice and the two searches share the GPU. Go
+Teacher detects this and shows a notice; quit KaTrain, or let it finish its game, when you want
+full analysis speed.
+
+### Batches
+
+Upload several SGF files at once, or keep uploading while a game is being analysed: games run
+one at a time in upload order, queued ones show their position, and **cancel all** stops the
+batch. On the command line, directories expand to every `.sgf` inside them:
+
+```
+go_teacher analyze ~/Documents/Go_games/            # every game in the folder, in order
+```
 
 ## Build from source
 
@@ -94,9 +111,9 @@ The live board has switchable layers (remembered between runs):
 - **territory** (default on): ownership shading from KataGo, dark for Black, light for White.
 - **policy heat map**: the raw network's move probabilities for the whole board, before search.
 - **human policy heat map**: where a player of the chosen rank would play. Requires the
-  human-style network (see "Play against a human-like opponent" above) and a **Human policy
-  profile** chosen in the upload form, e.g. `rank_5k`, `preaz_1d`, `proyear_2000`. The option
-  is hidden when no human network is loaded.
+  human-style network (setup step 4) and a **Human policy profile** chosen in the upload form,
+  e.g. `rank_5k`, `preaz_1d`, `proyear_2000`. The option is hidden when no human network is
+  loaded.
 
 Ownership and policy arrays are stored only in the JSON dump, never in the Markdown report.
 
@@ -125,6 +142,7 @@ Headless use, without a browser:
 
 ```
 ./target/release/go_teacher analyze game1.sgf game2.sgf            # config's maxVisits
+./target/release/go_teacher analyze ~/Documents/Go_games/          # a whole folder
 ./target/release/go_teacher analyze game.sgf --visits 200          # faster, weaker
 ./target/release/go_teacher analyze game.sgf --human-profile rank_5k  # add human policy maps
 ```

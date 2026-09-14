@@ -40,6 +40,9 @@
   .guide { margin-top:12px; padding:14px 18px; background:#fffaf0; border:1px solid #e6d9b8; border-radius:8px; }
   .guide h2 { margin:0 0 8px; }
   .guide li { margin-bottom:10px; }
+  .guide pre { background:#f3efe3; padding:8px 10px; border-radius:6px; font-size:12px; margin:6px 0; }
+  .btn.secondary { background:transparent; color:var(--accent); }
+  .notice { padding:8px 12px; border-radius:8px; margin-top:8px; font-size:13px; background:#fbf1d6; color:#7a5a00; }
   /* live viewer */
   .live { display:grid; grid-template-columns: minmax(280px, 560px) minmax(260px, 1fr); gap:18px; align-items:start; }
   @media (max-width: 760px) { .live { grid-template-columns: 1fr; } }
@@ -85,19 +88,28 @@
     </div>
     <div id="banner" class="banner warn">Starting KataGo and loading the model… this can take a minute.</div>
     <div id="guide" class="guide" hidden>
-      <h2>Go Teacher needs a Go engine</h2>
-      <p>Go Teacher analyses games with <b>KataGo</b>, which is not included in this download. Two ways to get it:</p>
+      <h2 id="guidetitle">Set up the Go engine</h2>
+      <p>Go Teacher analyses games with <b>KataGo</b> and shares its setup with <b>KaTrain</b>, a free Go program. Follow these steps once (about 15 minutes, mostly downloads); afterwards both programs use the same fast engine.</p>
       <ol>
-        <li><b>Install KaTrain (recommended, 5 minutes).</b> KaTrain is a free Go program that ships with KataGo built in.
-          <a href="https://github.com/sanderland/katrain/releases" target="_blank" rel="noopener">Download KaTrain for macOS</a>, drag it into <code>/Applications</code>,
-          and open it once so it can set itself up. Then click <b>Retry</b> below: Go Teacher finds KaTrain's engine on its own.
-          <br><span class="status">Bonus: in KaTrain you can play against a human-like opponent of your own rank (Settings → Engine → Human-like model, using
-          <a href="https://github.com/lightvector/KataGo/releases" target="_blank" rel="noopener">KataGo's human-style network</a>). Go Teacher uses that same network
-          to tell you how typical each of your mistakes is for your level.</span></li>
-        <li><b>Already have KataGo?</b> Enter the paths to the executable and the network file in <b>Engine settings</b> below and click Save. The analysis config is built in.</li>
+        <li><b>Install KaTrain.</b> <a href="https://github.com/sanderland/katrain/releases" target="_blank" rel="noopener">Download KaTrain for macOS</a>, drag it into <code>/Applications</code> and open it once.
+          It works immediately with a small built-in engine; the next steps make it several times faster and stronger.</li>
+        <li><b>Install KataGo with the Metal backend</b> (uses the Apple GPU and Neural Engine). In Terminal:
+          <pre>brew install katago
+katago version        # must print "Using Metal backend"</pre>
+          If you do not have Homebrew, install it first from <a href="https://brew.sh" target="_blank" rel="noopener">brew.sh</a>.</li>
+        <li><b>Download the latest network.</b> On <a href="https://katagotraining.org/networks/" target="_blank" rel="noopener">katagotraining.org/networks</a> take the newest
+          <em>transformer</em> network (name starting with <code>b11c768h12nbt</code> or newer) and save it as <code>~/.katago/default_model.bin.gz</code>.
+          Also download the human-style network <code>b18c384nbt-humanv0.bin.gz</code> from
+          <a href="https://github.com/lightvector/KataGo/releases" target="_blank" rel="noopener">KataGo's releases</a> (release v1.15.0 or later) as <code>~/.katago/default_human_model.bin.gz</code>:
+          it lets KaTrain play you at your own rank and lets Go Teacher tell you how typical each mistake is for your level.</li>
+        <li><b>Tell KaTrain.</b> In KaTrain open Settings → Engine and set: executable <code>/opt/homebrew/bin/katago</code>, model <code>~/.katago/default_model.bin.gz</code>,
+          human-like model <code>~/.katago/default_human_model.bin.gz</code>. Leave the config field as it is unless you have your own. Save.</li>
+        <li><b>Click Retry.</b> Go Teacher reads KaTrain's engine settings and starts the same engine. The banner above turns green and shows "Metal backend".</li>
       </ol>
-      <p><button class="btn" onclick="retryEngine()">Retry</button> <span class="status" id="guidemsg"></span></p>
+      <p class="status">Prefer not to use KaTrain? Enter the paths in <b>Engine settings</b> below instead; they take precedence over KaTrain's.</p>
+      <p><button class="btn" onclick="retryEngine()">Retry</button> <button class="btn secondary" onclick="$('guide').hidden=true">Hide guide</button> <span class="status" id="guidemsg"></span></p>
     </div>
+    <div id="notices"></div>
     <p id="engine" class="status"></p>
     <p id="message" class="status"></p>
     <p class="status" id="quitline"></p>
@@ -168,7 +180,8 @@
   </div>
 
   <div class="card">
-    <h2>Analyses</h2>
+    <div class="row" style="justify-content:space-between"><h2>Analyses</h2>
+      <span class="status">Games run one at a time in upload order. <button class="linkbtn" onclick="cancelAll()">cancel all</button></span></div>
     <table>
       <thead><tr><th>#</th><th>File</th><th>Status</th><th>Result</th><th>Report</th></tr></thead>
       <tbody id="jobs"><tr><td colspan="5" class="empty">Nothing analyzed yet.</td></tr></tbody>
@@ -205,10 +218,21 @@ async function loadStatus() {
       $('guide').hidden = false;
       b.className = 'banner err'; b.textContent = 'The KataGo process exited. Relaunch Go Teacher.';
     } else {
-      b.className = 'banner ok'; b.textContent = 'KataGo is ready (' + s.engine_version + '). Upload a game to begin.';
-      $('guide').hidden = true;
+      b.className = 'banner ok'; b.textContent = 'KataGo is ready: ' + s.engine_version + ', ' + s.backend + ' backend, network ' + s.model_name + '. Upload a game to begin.';
+      if (!window.guideDismissed) $('guide').hidden = true;
     }
     if (s.engine_state === 'starting') $('guide').hidden = true;
+    let notices = '';
+    if (s.engine_state === 'ready' && s.backend && s.backend !== 'Metal') {
+      notices += '<div class="notice">This engine uses the <b>' + esc(s.backend) + '</b> backend' + (s.backend === 'OpenCL' ? ' (KaTrain\'s built-in engine)' : '') +
+        '. Analysis will be several times faster with KataGo\'s Metal build. <a href="#" onclick="$(\'guide\').hidden=false;window.guideDismissed=true;return false;">Show the setup guide</a>.</div>';
+    }
+    if (s.foreign_engines && s.foreign_engines.length) {
+      const f = s.foreign_engines[0];
+      notices += '<div class="notice">' + esc(f.owner) + ' is running its own KataGo' + (s.foreign_same_model ? ' with the same network' : '') +
+        '. The two engines share the GPU, so analysis here runs slower' + (f.owner === 'KaTrain' ? '; quit KaTrain, or finish its game, for full speed' : '') + '.</div>';
+    }
+    $('notices').innerHTML = notices;
     if (wasReady === false && engineReady) document.title = 'go_teacher — ready';
     wasReady = engineReady;
     const folder = windowed
@@ -299,7 +323,7 @@ $('file').addEventListener('change', async (ev) => {
       $('message').innerHTML = '<span class="err">' + esc(await r.text()) + '</span>';
     } else {
       const j = await r.json();
-      $('message').textContent = 'Started ' + j.job_ids.length + ' analysis job(s). Watch the live view below; a full game takes several minutes.';
+      $('message').textContent = 'Queued ' + j.job_ids.length + ' game(s); they run one after another. Watch the live view below; a full 19x19 game takes 15–20 minutes at 500 visits.';
       view.job = j.job_ids[0]; view.follow = true; $('follow').checked = true;
     }
   } catch (e) {
@@ -318,7 +342,7 @@ async function cancel(id) {
 function statusCell(j) {
   const s = j.state;
   switch (s.state) {
-    case 'queued': return 'Queued';
+    case 'queued': return 'Queued (position ' + (queuePosition(j)) + ') <button class="linkbtn" onclick="cancel(' + j.id + ')">cancel</button>';
     case 'running': {
       const p = s.total ? Math.round(100 * s.done / s.total) : 0;
       return '<div class="bar"><div style="width:' + p + '%"></div></div>'
@@ -351,6 +375,15 @@ function reportCell(j) {
     a += '<a href="/api/jobs/' + j.id + '/report.md">download .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
   }
   return a + '</div><span class="status"><code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></span>';
+}
+
+function queuePosition(j) {
+  const q = jobs.filter(x => x.state.state === 'queued').map(x => x.id).sort((a, b) => a - b);
+  return q.indexOf(j.id) + 1;
+}
+async function cancelAll() {
+  await fetch('/api/jobs/cancel-all', { method: 'POST' });
+  loadJobs();
 }
 
 async function loadJobs() {

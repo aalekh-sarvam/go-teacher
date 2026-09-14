@@ -121,6 +121,8 @@ pub struct AppState {
     pub next_job: Mutex<u64>,
     /// Cancelled when the user asks the app to quit.
     pub shutdown: CancellationToken,
+    /// Jobs run one at a time so a batch of uploads finishes in order; others wait as Queued.
+    pub job_slots: Arc<tokio::sync::Semaphore>,
 }
 
 type Shared = Arc<AppState>;
@@ -148,6 +150,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/jobs", get(list_jobs))
         .route("/api/jobs/:id", get(get_job))
         .route("/api/jobs/:id/cancel", post(cancel_job))
+        .route("/api/jobs/cancel-all", post(cancel_all))
         .route("/api/jobs/:id/report.md", get(report_md))
         .route("/api/jobs/:id/report.json", get(report_json))
         .route("/api/jobs/:id/live", get(live_summary))
@@ -166,17 +169,25 @@ async fn index() -> Html<&'static str> {
 }
 
 async fn status(State(s): State<Shared>) -> Json<serde_json::Value> {
-    let (state, alive, version, error) = match &*s.engine.read().unwrap() {
-        EngineState::Starting => ("starting", false, String::new(), String::new()),
-        EngineState::Ready(e) => ("ready", e.is_alive(), e.version.clone(), String::new()),
-        EngineState::Failed(msg) => ("failed", false, String::new(), msg.clone()),
+    let (state, alive, version, error, backend, model_name) = match &*s.engine.read().unwrap() {
+        EngineState::Starting => ("starting", false, String::new(), String::new(), String::new(), String::new()),
+        EngineState::Ready(e) => ("ready", e.is_alive(), e.version.clone(), String::new(), e.backend.clone(), e.model_name.clone()),
+        EngineState::Failed(msg) => ("failed", false, String::new(), msg.clone(), String::new(), String::new()),
     };
+    let foreign = crate::katago::running_foreign_engines();
+    let cfg_model = s.engine_config.read().unwrap().model.display().to_string();
+    let foreign_same_model = foreign.iter().any(|f| f.model.as_deref() == Some(cfg_model.as_str()));
     let cfg = s.engine_config.read().unwrap().clone();
     Json(serde_json::json!({
         "engine_state": state,
         "engine_alive": alive,
         "engine_version": version,
         "engine_error": error,
+        "backend": backend,
+        "model_name": model_name,
+        "foreign_engines": foreign,
+        "foreign_same_model": foreign_same_model,
+        "queued_jobs": s.jobs.lock().unwrap().values().filter(|j| matches!(j.state, JobState::Queued)).count(),
         "windowed": s.windowed,
         "katago": cfg.katago,
         "model": cfg.model,
@@ -551,6 +562,15 @@ async fn get_job(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
     }
 }
 
+async fn cancel_all(State(s): State<Shared>) -> StatusCode {
+    for j in s.jobs.lock().unwrap().values() {
+        if matches!(j.state, JobState::Queued | JobState::Running { .. }) {
+            j.cancel.cancel();
+        }
+    }
+    StatusCode::NO_CONTENT
+}
+
 async fn cancel_job(State(s): State<Shared>, Path(id): Path<u64>) -> Response {
     let jobs = s.jobs.lock().unwrap();
     match jobs.get(&id) {
@@ -732,6 +752,17 @@ pub fn start_job(s: &Shared, file_name: String, bytes: Vec<u8>, max_visits: Opti
 
     let state = s.clone();
     tokio::spawn(async move {
+        // Wait for a slot; cancelling while queued just marks the job cancelled.
+        let permit = tokio::select! {
+            p = state.job_slots.clone().acquire_owned() => p,
+            _ = cancel.cancelled() => {
+                if let Some(j) = state.jobs.lock().unwrap().get_mut(&id) {
+                    j.state = JobState::Cancelled;
+                }
+                return;
+            }
+        };
+        let Ok(_permit) = permit else { return };
         let opts = AnalysisOptions {
             max_visits,
             human_profile,

@@ -39,12 +39,71 @@ impl EngineConfig {
 
 type Pending = Arc<Mutex<HashMap<String, mpsc::UnboundedSender<Value>>>>;
 
+/// Output of `katago version`: (first line, backend name such as "Metal", "OpenCL", "Eigen", "CUDA").
+pub fn probe_version(katago: &std::path::Path) -> (String, String) {
+    let out = std::process::Command::new(katago).arg("version").output().ok();
+    let text = out.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
+    let version = text.lines().next().map(|l| l.trim().to_string()).unwrap_or_else(|| "unknown".to_string());
+    let backend = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Using ").and_then(|r| r.strip_suffix(" backend")).map(|b| b.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+    (version, backend)
+}
+
+/// Network name from the header of a `.bin.gz` model file (e.g. `b11c768h12nbt3tflrs-fson-silu`).
+pub fn probe_model_name(model: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let f = std::fs::File::open(model).ok()?;
+    let mut gz = flate2::read::GzDecoder::new(f);
+    let mut buf = [0u8; 256];
+    let n = gz.read(&mut buf).ok()?;
+    let head = String::from_utf8_lossy(&buf[..n]);
+    head.split_whitespace().next().map(|s| s.to_string())
+}
+
+/// KataGo processes started by other programs (KaTrain marks its own with `homeDataDir=~/.katrain`).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ForeignEngine {
+    pub pid: u32,
+    pub owner: String,
+    pub katago: Option<String>,
+    pub model: Option<String>,
+}
+
+pub fn running_foreign_engines() -> Vec<ForeignEngine> {
+    let out = std::process::Command::new("ps").args(["-axo", "pid=,command="]).output().ok();
+    let text = out.and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default();
+    let me = std::process::id();
+    let mut v = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let Some((pid, cmd)) = line.split_once(' ') else { continue };
+        let Ok(pid) = pid.trim().parse::<u32>() else { continue };
+        if pid == me || !cmd.contains("katago") || !cmd.contains(" analysis") || cmd.contains("reportAnalysisWinratesAs=BLACK") {
+            continue; // not KataGo, or one of our own engines (we always pass that override)
+        }
+        let args: Vec<&str> = cmd.split_whitespace().collect();
+        let after = |flag: &str| args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1)).map(|s| s.to_string());
+        let owner = if cmd.contains(".katrain") { "KaTrain" } else { "another program" };
+        let e = ForeignEngine { pid, owner: owner.to_string(), katago: args.first().map(|s| s.to_string()), model: after("-model") };
+        // A shell wrapper around the engine shows the same command line; report each engine once.
+        if !v.iter().any(|x: &ForeignEngine| x.katago == e.katago && x.model == e.model) {
+            v.push(e);
+        }
+    }
+    v
+}
+
 pub struct Engine {
     stdin: tokio::sync::Mutex<ChildStdin>,
     pending: Pending,
     next_id: AtomicU64,
     alive: Arc<AtomicBool>,
     pub version: String,
+    /// "Metal", "OpenCL", "Eigen", "CUDA", ...
+    pub backend: String,
+    pub model_name: String,
     pub config: EngineConfig,
     _child: Mutex<Child>,
 }
@@ -55,14 +114,14 @@ impl Engine {
     pub async fn spawn(config: EngineConfig, cancel: tokio_util::sync::CancellationToken) -> Result<Arc<Engine>> {
         config.validate()?;
 
-        let version = Command::new(&config.katago)
-            .arg("version")
-            .output()
-            .await
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| s.lines().next().map(|l| l.trim().to_string()))
-            .unwrap_or_else(|| "unknown".to_string());
+        let (version, backend) = {
+            let k = config.katago.clone();
+            tokio::task::spawn_blocking(move || probe_version(&k)).await.unwrap_or_else(|_| ("unknown".into(), "unknown".into()))
+        };
+        let model_name = {
+            let m = config.model.clone();
+            tokio::task::spawn_blocking(move || probe_model_name(&m)).await.ok().flatten().unwrap_or_else(|| "unknown".to_string())
+        };
 
         let mut cmd = Command::new(&config.katago);
         cmd.arg("analysis").arg("-model").arg(&config.model).arg("-config").arg(&config.config);
@@ -138,6 +197,8 @@ impl Engine {
             next_id: AtomicU64::new(1),
             alive,
             version,
+            backend,
+            model_name,
             config,
             _child: Mutex::new(child),
         });
@@ -167,7 +228,7 @@ impl Engine {
             Some(_) => {}
             None => bail!("KataGo exited during startup; run it by hand to see the error"),
         }
-        tracing::info!("KataGo ready ({})", engine.version);
+        tracing::info!("KataGo ready ({}, {} backend, network {})", engine.version, engine.backend, engine.model_name);
         Ok(engine)
     }
 

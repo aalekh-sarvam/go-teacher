@@ -112,7 +112,7 @@ enum Command {
     Serve,
     /// Analyze one or more SGF files from the command line, without the web UI.
     Analyze {
-        /// SGF files to analyze.
+        /// SGF files, or directories containing SGF files, to analyze in order.
         #[arg(required = true)]
         files: Vec<PathBuf>,
         /// Override maxVisits from the analysis config.
@@ -258,7 +258,9 @@ pub fn resolve_engine(cli: &EnginePaths) -> (katago::EngineConfig, String) {
     .unwrap_or_else(|| PathBuf::from(BREW_KATAGO));
     let model = pick(&cli.model, &saved.model, &[kt.model.clone(), None, Some(own.join("default_model.bin.gz"))], "network", &mut sources)
         .unwrap_or_else(|| own.join("default_model.bin.gz"));
-    let config = match pick(&cli.config, &saved.config, &[], "config", &mut sources) {
+    // KaTrain's config counts only when the user set one (an absolute path outside KaTrain.app).
+    let kt_user_config = kt.config.clone().filter(|p| res.as_ref().map_or(true, |r| !p.starts_with(r)));
+    let config = match pick(&cli.config, &saved.config, &[kt_user_config], "config", &mut sources) {
         Some(p) => p,
         None => {
             sources.push("config: built-in default".to_string());
@@ -457,6 +459,7 @@ fn serve(runtime: tokio::runtime::Runtime, paths: EnginePaths, out_dir: PathBuf,
         cli_paths: paths,
         settings_path: settings_path(),
         katrain_installed: katrain_resources().is_some(),
+        job_slots: Arc::new(tokio::sync::Semaphore::new(1)),
         windowed,
         out_dir: out_dir.clone(),
         jobs: Mutex::new(Default::default()),
@@ -532,6 +535,26 @@ async fn reqwest_free_probe(url: &str) -> bool {
 
 async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files: Vec<PathBuf>, visits: Option<u64>, human_profile: Option<String>, student: Option<sgf::Color>) -> Result<()> {
     engine_cfg.validate()?;
+    // Directories expand to every .sgf inside them (sorted), so a whole folder can be batched.
+    let mut expanded: Vec<PathBuf> = Vec::new();
+    for f in &files {
+        if f.is_dir() {
+            let mut inner: Vec<PathBuf> = std::fs::read_dir(f)
+                .with_context(|| format!("cannot read directory {}", f.display()))?
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.extension().map_or(false, |e| e.eq_ignore_ascii_case("sgf")))
+                .collect();
+            inner.sort();
+            expanded.extend(inner);
+        } else {
+            expanded.push(f.clone());
+        }
+    }
+    let files = expanded;
+    if files.is_empty() {
+        anyhow::bail!("no .sgf files to analyze");
+    }
     // Parse everything first so a bad file fails before the model loads.
     let mut games = Vec::new();
     for f in &files {
