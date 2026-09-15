@@ -198,7 +198,9 @@ Black; override with the Student selector in the upload form or `--student W`.
 ### Report files
 
 The **Report files on disk** panel lists every `.md` and `.json` in the output folder with
-size and date. JSON dumps (roughly 1–2 MB per game) can be deleted one by one or all at
+size and date. This panel and **Analyses** show 10 rows per page by default, with separate
+First/Previous/Next/Last controls and a 10/25/50-row selector. Lists stay newest first, and
+automatic refresh preserves your page. Bulk actions still apply to the complete list. JSON dumps (roughly 1–2 MB per game) can be deleted one by one or all at
 once with **delete all JSON files**; Markdown reports are never removed by that button. A
 JSON dump can also be loaded back into the viewer after a restart.
 

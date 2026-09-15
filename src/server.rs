@@ -751,7 +751,7 @@ fn list_out_dir(out_dir: &std::path::Path) -> Vec<FileEntry> {
             });
         }
     }
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| a.name.cmp(&b.name)));
     out
 }
 
