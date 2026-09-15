@@ -5,8 +5,8 @@ Read this for new reports. References describing formats 2–4 remain for older 
 ## Workflow and data contract
 
 Run `python scripts/parse_review.py report.md parsed.json --brief-output brief.json`.
-Read brief.json to select moments; read the complete selected candidates in parsed.json before
-narrating sequences. The brief intentionally omits game stones and truncates sequence previews.
+Read brief.json to select moments and inspect the compact whole-game context; read the complete selected candidates in parsed.json before
+narrating sequences. The brief keeps the complete move timeline and summaries, but omits candidate stone lists and truncates sequence previews.
 Always pass **parsed.json** to validation and generation. The Markdown is the only input needed.
 Its single fenced `go-teacher-evidence` JSON block is authoritative. Reject incomplete blocks.
 
@@ -26,6 +26,63 @@ shortlisted moments keep their existing facts and have an explicit unavailable r
 for sampled moves after the fixed first move; these are omitted from the compact report. Every pass consumes a ply and changes player.
 A PV score is the search estimate; a sampled rollout score is a separately searched endpoint.
 No silent substitution of engine moves for missing human data. Unavailable fields are not zero.
+
+## Compact game context (optional additions to format 5)
+
+Existing format-5 reports remain valid. New reports add fields without replacing any teaching
+candidates, alternatives, refutations, human sequences, phase facts or status events.
+
+- `moves[]` still has `number`, `color`, `move`. It now adds `point_loss` for the **mover** and
+  `score_black` **after** that move. Positive score favours Black; negative favours White.
+  The score before move N is the score after N−1, or `initial_position.score_black` for move 1.
+  `initial_position` also includes Black winrate (0–1) and search visits; it can be null.
+  Never alternate the score sign with the player to move. For the student's lead, negate
+  Black's score only when `game_info.student == "W"`.
+- `summary.accuracy.B/W` retains `moves` and `mean_loss`; it adds `total_loss`, `median_loss`,
+  `top1_moves`, `top3_moves`, `ranked_moves` and `category_counts`. Loss aggregates clamp negative
+  values to zero; the timeline preserves the signed estimate. Totals are not the final margin.
+  Top-choice counts are not percentages or strength ratings. Check `ranked_moves` coverage;
+  mean/median alone cannot identify the tactical cause of a mistake.
+- `summary.timing.status` is `available` if any valid clock-derived time exists, otherwise
+  `unavailable`. `players.B/W` each has `timed_moves` and `untimed_moves`. With recorded times it
+  adds `median_seconds`, `mean_seconds`, and `at_or_below_median` / `above_median` buckets with
+  `moves` and `mean_loss`. The split is **per player**, with ties in the first bucket. Empty
+  bucket loss is null. `moves[].time_spent_seconds` is absent when unknown; zero means recorded
+  zero, not missing. Sparse samples and differences in position difficulty limit comparisons.
+- `context_moves` indexes supporting positions: `opponent_mistakes` (up to six losses of at
+  least 2 points, largest first), `checkpoints` (every 25 moves, or 50 when the game exceeds
+  200 moves), and `last_move` (null for an empty record). Their compact evaluations and searched
+  alternatives are in `move_details[str(number)]`, alongside the existing teaching/praise
+  entries. Read a supporting entry from parsed.json when explaining that transition or missed
+  opportunity; it is not automatically another student lesson. Entries shared by categories
+  are stored once. Only teaching candidates carry the full generated hints, atari facts and
+  local chains; do not assume that commentary exists for every context move.
+- Continue using the unchanged `arc.phases`, `arc.status_changes`, local chains, atari hints,
+  `captured_at` and `missed_opportunities`. Status events are selected detections, not a complete
+  capture ledger or a safety assessment of every group. No event does not imply a safe group.
+
+Use this context for a few broad observations, then focus the lesson on specific mistakes and
+improvements. For example, a lower middlegame loss can support "your middlegame was steadier
+than your opening." To say a lead was sustained or surrendered across a range, check **all**
+intermediate scores and both players' losses with a short script, not just the endpoints.
+Distinguish the student's losses from opportunities the opponent offered. Report an estimated
+lead change, not a guaranteed win; negative move loss can reflect search disagreement.
+
+A repeated-habit claim (such as answering locally instead of taking bigger points) needs multiple
+supporting teaching examples. A missed-capture claim needs a capture/refutation or searched
+alternative establishing it; a score dip alone cannot. Describe choices and consequences, not
+what the student saw, thought or ignored. Use one-game language unless existing history supports
+an across-game trend. The timeline is not a set of searched alternatives for every move.
+
+Keep `overall_feedback`, `game_arc`, lesson `story`, praise and practice. Give each a purpose:
+overview = main strengths and priority; phases = meaningful changes in balance; lesson story =
+local context; lesson panels = move, reply and improvement. Avoid restating every mistake in all
+four places. No new compulsory lesson or quiz arises from a summary statistic. Continue choosing
+quiz concepts from the selected lessons and their deeper evidence, researching fresh external
+positions and checking the transformed solutions as before.
+
+When these optional fields are absent in an older report, use its existing phase/teaching facts;
+do not request the JSON or SGF, fabricate evaluations, or treat missing clocks as zero.
 
 ## Choosing what to teach
 

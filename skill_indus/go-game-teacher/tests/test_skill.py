@@ -1,13 +1,14 @@
 """Regression tests for report ingestion, evidence joins and legal lesson/puzzle playback."""
 import copy
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from parse_review import parse_review
-from lesson_contract import hydrate
+from lesson_contract import hydrate, brief
 from validate_lesson import validate, canonical
 from go_rules import Position, sequence_position
 from generate_lesson import generate_html
@@ -30,6 +31,33 @@ class SkillTests(unittest.TestCase):
         parsed=parse_review((ROOT/'tests/sample_report_format4.md').read_text())
         self.assertEqual(parsed['report_format'],4)
         self.assertTrue(parsed['moves'])
+
+    def test_context_additions_survive_parser_and_brief_without_changing_lesson(self):
+        updated=copy.deepcopy(self.parsed)
+        updated['initial_position']={'turn':0,'score_black':-6.5,'winrate_black':0.4,'visits':150}
+        updated['moves'][0].update(point_loss=1.25,score_black=-7.75,time_spent_seconds=0.0)
+        updated['summary']['timing']={'status':'available','players':{'B':{'timed_moves':1}}}
+        text='Report format: 5\n\n```go-teacher-evidence\n'+json.dumps(updated)+'\n```\n'
+        parsed=parse_review(text)
+        view=brief(parsed)
+        self.assertEqual(view['moves'],updated['moves'])
+        self.assertEqual(view['initial_position'],updated['initial_position'])
+        self.assertEqual(view['summary'],updated['summary'])
+        self.assertNotIn('move_details',view)
+        self.assertEqual(parsed,updated)  # Brief must not mutate the authoritative evidence.
+        self.assertEqual(hydrate(parsed,self.lesson),hydrate(self.parsed,self.lesson))
+        self.assertEqual(validate(parsed,self.lesson)[0],[])
+        before=generate_html(self.parsed,self.lesson); after=generate_html(parsed,self.lesson)
+        for variable in ('lessonData','puzzleData','goodMoveData'):
+            pattern=rf'const {variable} = (.*);'
+            self.assertEqual(re.search(pattern,before)[1],re.search(pattern,after)[1])
+        self.assertEqual(sequence_position(parsed,{'from_turn':len(parsed['moves']),'first_to_move':'B','moves':[]}).board,
+                         sequence_position(self.parsed,{'from_turn':len(parsed['moves']),'first_to_move':'B','moves':[]}).board)
+
+    def test_older_reports_keep_their_available_timeline_in_brief(self):
+        for parsed in (self.parsed,parse_review((ROOT/'tests/sample_report_format4.md').read_text())):
+            self.assertEqual(brief(parsed)['moves'],parsed['moves'])
+        self.assertNotIn('initial_position',brief(self.parsed))
 
     def test_truncated_or_duplicate_blocks_rejected(self):
         text=(ROOT/'tests/sample_report_format5.md').read_text()

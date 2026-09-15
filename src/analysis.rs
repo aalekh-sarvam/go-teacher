@@ -852,6 +852,7 @@ mod tests {
         std::fs::write(verify.join("detailed.md"), &detailed).unwrap();
         eprintln!("Report sizes: compact {} bytes; detailed {} bytes", md.len(), detailed.len());
         let json = serde_json::to_string(&a).unwrap();
+        std::fs::write(verify.join("analysis.json"), &json).unwrap();
         let back: GameAnalysis = serde_json::from_str(&json).unwrap();
         assert_eq!(back.turns.len(), 21);
         engine.shutdown();
@@ -886,6 +887,7 @@ mod tests {
         assert_eq!(good[0].to_move,Color::White);
         let verify=root.join("target/v5-verification");std::fs::create_dir_all(&verify).unwrap();
         std::fs::write(verify.join("white.json"),serde_json::to_string(&crate::evidence::build(&a)).unwrap()).unwrap();
+        std::fs::write(verify.join("white-analysis.json"),serde_json::to_string(&a).unwrap()).unwrap();
         engine.shutdown();
     }
 

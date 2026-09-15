@@ -16,11 +16,20 @@ The original detailed move-by-move report opens inside the app through **detaile
 rendered Markdown, back navigation and a separate **Download .md** link. Large
 ownership/policy arrays stay in JSON. The updated [teaching skill](skill_indus/go-game-teacher/SKILL.md)
 uses panel-based lessons and joins numerical evidence directly, while researching fresh practice
-variations. Upload `skill_indus/go-game-teacher-v5.zip` to your teaching agent.
+variations. Upload `skill_indus/go-game-teacher-v5-context.zip` to your teaching agent.
 
 For each lesson, upload only the main `.md` report. It contains the complete compact teaching
 evidence; the skill extracts its own `parsed.json` from that Markdown. The app's separate `.json`
 and the original SGF are not required.
+
+The main report preserves all existing teaching commentary and deeper evidence. Its compact
+move list now adds point loss and the resulting Black score for every move, plus the initial
+evaluation and richer accuracy/timing summaries. Selected supporting entries cover the
+opponent's biggest mistakes, checkpoints and the last move, as well as teaching/praise.
+No alternatives are added to ordinary timeline rows. The skill uses this for a brief overview
+while keeping mistakes, replies, improvements and practice central. See
+[the change and comparison guide](docs/REPORT_CONTEXT.md) for preservation checks, measured
+size costs and the old/new inputs to run through your teaching system.
 
 ## Setup (one time, about 15 minutes)
 
@@ -179,7 +188,7 @@ first move KataGo disliked there. When the record has clock data, thinking time 
 fast-versus-slow loss table appear. Once a student has two or more earlier analysed games, a
 **Compared with the student's earlier games** section shows trends (kept in `progress.json`
 in the reports folder). A second, stronger human profile ("target") can be chosen at upload to
-show what a player two stones stronger would do. Only key moves
+show what a player two stones stronger would do. In the detailed report, only key moves
 get a full entry with candidate table and diagram; every other move is one line, which keeps
 a full game to a few hundred lines.
 
@@ -232,7 +241,7 @@ When launched from Finder the app shows its window, starts KataGo, writes report
 is already running just opens a window onto the running instance. The engine is found the same way
 as on the command line (KaTrain's settings, then its bundle).
 
-## What the report contains
+## What the detailed report contains
 
 1. Game metadata and the analysis settings used.
 2. A "how to read this" section aimed at the AI teacher (coordinates, winrate convention,

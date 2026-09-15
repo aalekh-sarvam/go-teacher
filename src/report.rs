@@ -868,6 +868,7 @@ pub fn render_markdown(a: &GameAnalysis) -> String {
         let _ = writeln!(out, "| {} | {} {} | {} | {:.1} pts | {} | {} |", t.number, t.color.name(), t.mv, t.best.as_deref().unwrap_or("unknown"), t.point_loss, t.theme.label(), if deep {"available"} else {"base review"});
     }
     out.push_str("\n## How to use this report\n\nParse the block below with the go-game-teacher skill. It contains the complete move list, setup stones, game arc facts, praise, teaching evidence and sequence origins. The skill writes prose and references evidence by move number; its generator loads numerical facts directly. Large heatmap arrays remain in the application's JSON. The detailed per-move Markdown report remains available in the app.\n\n");
+    out.push_str("The move list also records each move's point loss and resulting numeric Black score lead, with the initial evaluation recorded once. Use this timeline and the phase statistics for a short overview; keep the lesson focused on selected mistakes, replies and better choices. Timing is included only where recorded. Full variations are limited to teaching candidates, praise, the opponent’s biggest mistakes, checkpoints and the last move.\n\n");
     for p in &a.probes.moments {
         let _ = writeln!(out, "### Move {}\n", p.move_number);
         if let Some(value) = p.pass_comparison["best_vs_pass_points"].as_f64() {

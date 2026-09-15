@@ -46,7 +46,9 @@ def hydrate(parsed, authored):
 def brief(parsed):
     """A model-facing reading view. Keep the original parsed file for validation/generation."""
     out = deepcopy(parsed)
-    out.pop('moves',None);out.pop('move_details',None)
+    # Keep the compact game timeline: it is the context for phase/lead observations.
+    # Full candidate tables still live in parsed.json alongside untruncated sequences.
+    out.pop('move_details',None)
     for c in out['teaching']['candidates']:
         e = c.get('evidence',{})
         e['sequences'] = [{k:v for k,v in s.items() if k not in ('probabilities','seed')} for s in e.get('sequences',[])]

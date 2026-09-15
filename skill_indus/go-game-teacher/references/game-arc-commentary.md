@@ -24,19 +24,19 @@ Think of it as three layers, each feeding the next:
 2. **The chain layer** — local cause→effect sequences that span several moves: the atari at move 19 that forced a connection at 20, which left the right-side group thin, which is *why* the invasion at 31 was a mistake. Shortlisted teaching moves are usually the visible tip of a chain; trace the chain both backward (how the position arose) and forward (what the mistake led to).
 3. **The pattern layer** — each phase and chain maps onto well-known Go patterns and proverbs (playing under strong stones, premature invasion, urgent-before-big, ladder direction). Research these online to give memorable names and remedies.
 
-Arc commentary is *enrichment*, not a replacement for the tactical lessons. Keep everything the workflow already produces; add this layer.
+Arc commentary supports the tactical lessons. Keep the existing lesson, praise and practice sections; choose only the broad observations that help the student improve. For format 5, read the optional compact-context contract in `evidence-format5.md`: it explains the scored timeline, statistics, missing data and how to avoid repeating the overview in every phase. There is no need to narrate every move or force a named pattern onto every phase.
 
 ---
 
 ## Segment the game into phases
 
-Use `arc.phases` from the parsed review: it already gives each phase's move range, the winrate and score at both ends, mean loss per side, the worst move per side, the student's top-1 rate and the hot regions where the board changed most. Add `arc.status_changes` for the groups that died, lived or were captured in that stretch. These numbers, plus the compact move list, are the phase story's facts. On a 9×9 the phases are short; on 19×19 they are longer. The program's split:
+Use `arc.phases` from the parsed review: it already gives each phase's move range, the winrate and score at both ends, mean loss per side, the worst move per side, the student's top-1 rate and the hot regions where the board changed most. Add `arc.status_changes` for detected ownership-prediction changes and recorded capture events in that stretch. Ownership labels do not prove life or death; this is not a complete group-status or capture ledger. These numbers, plus the compact move list, are the phase story's facts. On a 9×9 the phases are short; on 19×19 they are longer. The program uses move-count heuristics, not board-based phase recognition. The following are conceptual descriptions for the teacher, not the implemented cut-offs:
 
 - **Opening (fuseki)** — from the first move until corners and sides are roughly claimed and the first serious contact occurs. On 9×9 this may be only the first 6–10 moves. Focus: direction of play, big points, who took which framework, any immediate tactical blunders.
 - **Middle game (chūban)** — from first contact / fighting until territory borders harden. This is where most teaching candidates live. Focus: local fights, invasions, shape battles, atari and capture chains, groups that got heavy or cut.
 - **Endgame (yose)** — borders set, moves are about counting and order. Focus: sente endgame, point values, whether the student played small points first.
 
-For each phase, note in 2–4 sentences: what each side was trying to do, the one or two moves that mattered most, and how the strategic balance (winrate/score trajectory from the phase table) shifted. If a phase was uneventful, say so in one line — don't pad.
+For each phase, briefly note how the strategic balance shifted and which decisions matter to the lesson. Support claims about plans with the actual teaching evidence; do not infer intentions from the score trajectory alone. If a phase was uneventful, say so in one line — don't pad.
 
 The free Go Magic lesson "Three Stages of the Game" (see the library below) is a good model for how teachers frame these transitions.
 
@@ -73,7 +73,7 @@ Distil 2–4 bullets of researched phrasing per chain, plus the matched Go Magic
 
 The output gains two new slots (see `html-build-guide.md`):
 
-- **`game_arc`** — a top-level object with a short `intro` and a `phases` array (one entry each for Opening / Middle game / Endgame that the game actually had). Each phase: `phase`, `move_range`, a `narrative` of 2–4 sentences, and an optional `turning_points` list of short move-tagged notes. This is the holistic commentary that sits above the individual lessons.
+- **`game_arc`** — a top-level object with a short `intro` and a `phases` array (one entry each for Opening / Middle game / Endgame that the game actually had). Each phase: `phase`, `move_range`, a brief `narrative`, and an optional `turning_points` list of short move-tagged notes. This is the holistic commentary that sits above the individual lessons.
 - **`story`** — a per-lesson field: 2–4 sentences tracing the cause→effect chain around that move (how the position arose, what the mistake led to). This sits with each tactical lesson so the snapshot has context.
 
 Voice and style for both:
@@ -81,7 +81,7 @@ Voice and style for both:
 - Write as a narrator watching the game unfold, then dropping in to teach. Past tense for what happened ("White built thickness on the right"), present tense for the principle ("When your group is heavy, don't invade").
 - Always anchor in move numbers the student can find in the compact move list.
 - Connect, don't list. Prefer "because", "so", "which is why", "the price of" over a bare sequence of move references.
-- Keep it honest about uncertainty: if the chain involved a decided-game flip, say the winrate swing is noise and judge by the points.
+- Keep it honest about uncertainty: a saturated winrate does not mean the human game was decided. Check point losses and later score changes; do not dismiss a reversal as noise merely because the earlier winrate was near 0% or 100%.
 - Never invent captures, ladders, atari, or ko the report doesn't support (see below).
 
 ---
@@ -90,7 +90,7 @@ Voice and style for both:
 
 Everything in `references/go-teaching-concepts.md` and SKILL.md's "Board-fact discipline" applies to arc claims too — and arc claims are the easiest place to fabricate, because you're narrating across many moves. In particular:
 
-- Only claim a capture if `captured_at` says so, or the compact move list / diagram shows it.
+- Only claim a capture from an explicit capture fact or a legal replay of the moves. Coordinates or a score change alone do not establish a capture, and a capture alone does not establish that a different capture was missed.
 - Only claim atari or a liberty count from the hints or a diagram you can see — don't infer "this group was in atari" by imagination.
 - Only claim a tenuki if the move list shows the player played elsewhere while a threat was on the board.
 - `loss_region` tells you *where* points changed; use it to say where, not to invent a tactic.
