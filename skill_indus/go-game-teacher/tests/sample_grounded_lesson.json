@@ -1,0 +1,165 @@
+{
+ "schema_version": 2,
+ "game_title": "Go Teacher v5 \u00b7 synthetic interface test",
+ "overall_feedback": "This page uses deterministic test-engine data to check the lesson interface. The numbers are synthetic, not a review of a real game.",
+ "game_arc": {
+  "intro": "A test fixture for the complete report-to-lesson path.",
+  "phases": [
+   {
+    "phase": "Opening",
+    "move_range": "1\u201320",
+    "narrative": "The record exercises board setup, engine evidence and two human perspectives."
+   }
+  ]
+ },
+ "lessons": [
+  {
+   "move_number": 7,
+   "title": "Read the next reply",
+   "concept_label": "Reading",
+   "story": "The actual recorded move is B R14. This page is a synthetic validation fixture.",
+   "principle": "Before choosing your move, consider the opponent\u2019s reply.",
+   "panels": {
+    "position": "First inspect the position, then choose a panel.",
+    "played": "Follow the consequence of the played move. Change perspective to see a sampled human continuation.",
+    "best": "Compare the engine\u2019s preferred plan with the played move.",
+    "alternatives": "Each branch was evaluated separately.",
+    "local": "A local search is limited evidence; it does not prove that a group is alive or dead.",
+    "what_if": "These are separate sampled futures. Later decisions also contribute to the final score difference."
+   },
+   "sequence_explanations": {
+    "played_student": "This explanation belongs only to the student-profile sample."
+   }
+  }
+ ],
+ "puzzles": [
+  {
+   "title": "Count before you play elsewhere",
+   "concept_label": "Liberties",
+   "board_size": 9,
+   "black_stones": [
+    "B2",
+    "C2"
+   ],
+   "white_stones": [
+    "A2",
+    "B1",
+    "B3",
+    "C1",
+    "C3"
+   ],
+   "player_to_move": "B",
+   "opponent_last_move": "C3",
+   "correct_moves": [
+    "D2"
+   ],
+   "correct_lines": {
+    "D2": [
+     "D2",
+     "D3",
+     "E2"
+    ]
+   },
+   "hint": "Which liberty belongs to both black stones?",
+   "explanation": "D2 connects to both stones and gives the chain more liberties. This prevents the immediate capture.",
+   "wrong_moves": [
+    {
+     "move": "E4",
+     "quality": "mistake",
+     "refutation": [
+      "D2"
+     ],
+     "explanation": "White fills the chain\u2019s last liberty at D2 and captures B2 and C2."
+    }
+   ],
+   "generic_wrong_explanation": "Check the shared liberty before playing elsewhere.",
+   "lesson_move_number": 7,
+   "evidence_focus": "tree",
+   "source": {
+    "url": "https://www.britgo.org/intro/intro2.html",
+    "title": "British Go Association \u2014 capturing and liberties",
+    "example_locator": "Synthetic fixture only; not presented as a researched lesson",
+    "position": {
+     "board_size": 9,
+     "black_stones": [
+      "B2"
+     ],
+     "white_stones": [
+      "A2",
+      "B1",
+      "B3"
+     ],
+     "player_to_move": "B"
+    }
+   },
+   "transformation": "Synthetic regression example of the tutorial\u2019s atari motif: use a two-stone chain with a shared escape point. This fixture tests playback, not puzzle difficulty.",
+   "verification": "Replayed captures and counted the chain\u2019s liberties before and after D2; the goal is to avoid immediate capture, not prove unconditional life.",
+   "transfer_explanation": "Read the opponent\u2019s immediate capture before choosing a move elsewhere.",
+   "objective": {
+    "kind": "avoid_capture_for",
+    "description": "Black: prevent capture of B2 for the next three plies. This is a mechanics test, not a claim of unconditional life.",
+    "attacker": "W",
+    "target": "B2",
+    "plies": 3
+   },
+   "solution_review": {
+    "method": "exhaustive_capture",
+    "non_obvious_reason": "Synthetic validation of the schema; not a production difficulty example.",
+    "limitations": "Only survival for three plies is checked.",
+    "strongest_defences": [
+     {
+      "moves": [
+       "D2",
+       "D3",
+       "E2"
+      ],
+      "why_strongest": "White reduces escape liberties; exhaustive capture check includes all other legal replies.",
+      "conclusion": "The original group remains on the board through this horizon."
+     },
+     {
+      "moves": [
+       "E4",
+       "D2"
+      ],
+      "why_strongest": "White fills the shared last liberty.",
+      "conclusion": "B2 and C2 are captured."
+     }
+    ]
+   },
+   "board_checks": [
+    {
+     "after": [],
+     "anchor": "B2",
+     "expected": {
+      "color": "B",
+      "liberty_count": 1
+     }
+    },
+    {
+     "after": [
+      "E4",
+      "D2"
+     ],
+     "anchor": "B2",
+     "expected": {
+      "present": false
+     }
+    }
+   ]
+  }
+ ],
+ "good_moves": [],
+ "concepts_learned": [],
+ "grounding_version": 1,
+ "fact_checks": [
+  {
+   "text_path": "/lessons/0/story",
+   "quote": "The actual recorded move is B R14.",
+   "fact": "/actual_moves/7",
+   "expected": {
+    "color": "B",
+    "move": "R14"
+   }
+  }
+ ]
+}

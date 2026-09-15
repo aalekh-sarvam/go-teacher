@@ -24,10 +24,10 @@ The report carries a `Report format: N` line. The parser refuses formats it does
 ### 1. Parse the review
 
 ```
-python <sandbox_dir>/scripts/parse_review.py <input.md> <parsed.json> --brief-output <brief.json>
+python <sandbox_dir>/scripts/parse_review.py <input.md> <parsed.json> --brief-output <brief.json> --facts-output <facts.json>
 ```
 
-**Format 5:** first read [references/evidence-format5.md](references/evidence-format5.md). It defines the new evidence contract, which computations to use in lessons and practice, their limits, and lesson schema 2. Read brief.json to choose moments and inspect the compact game timeline and summaries, then the complete selected evidence in parsed.json to explain exact lines. New format-5 reports add point loss and score to every move; older format-5 reports may lack those optional fields. Always generate from parsed.json. Write prose and move references; the generator loads numbers, boards and sequences directly. The report includes setup stones and White-to-play positions. Large heatmap arrays are not in the Markdown.
+**Format 5:** also read [references/grounding-and-practice.md](references/grounding-and-practice.md) for the derived fact sheet, draft claim checks and verified transfer puzzles. New lessons set `grounding_version: 1`. First read [references/evidence-format5.md](references/evidence-format5.md). It defines the new evidence contract, which computations to use in lessons and practice, their limits, and lesson schema 2. Read brief.json to choose moments and inspect the compact game timeline and summaries, then the complete selected evidence in parsed.json to explain exact lines. New format-5 reports add point loss and score to every move; older format-5 reports may lack those optional fields. Always generate from parsed.json. Write prose and move references; the generator loads numbers, boards and sequences directly. The report includes setup stones and White-to-play positions. Large heatmap arrays are not in the Markdown.
 
 **Formats 2–4:** the following legacy parsing details apply.
 
@@ -45,7 +45,7 @@ For formats 2–4, add `--full` to `parse_review.py` only if you need the candid
 python <sandbox_dir>/scripts/validate_lesson.py <parsed.json> <lesson.json>
 ```
 
-Run this on every lesson JSON before step 7. It checks that lesson moves exist and were played by the stated colour, that every coordinate is legal and on an empty point (alternatives, refutations, better lines, puzzle stones, correct and wrong moves, punishment sequences), that no puzzle reuses a game position, and that every wrong move has an explanation. Fix every PROBLEM line; read the warnings.
+Run this on every lesson JSON before step 7. It checks that lesson moves exist and were played by the stated colour, that every coordinate is legal and on an empty point (alternatives, refutations, better lines, puzzle stones, correct and wrong moves, punishment sequences), that no puzzle reuses a game position, and that every wrong move has an explanation. For grounded drafts it also checks explicit fact assertions, replayed puzzle liberties, and bounded capture objectives against all legal replies. Fix every PROBLEM line; read the warnings. It does not certify the meaning of unrestricted prose, puzzle difficulty or unconditional life/death: compare the actual sentences to facts.json before rendering.
 
 ### 2. Identify the student
 
@@ -60,12 +60,12 @@ Start from `teaching.candidates`. The program has already ranked the student's m
 - `better_move_is` ("same area" = shape or reading; "elsewhere" = direction or priority).
 - `captured_at`: the played stone was captured later, a reading error.
 - hints about atari, tenuki while threatened, and unnecessary local answers.
-- `net_policy` / `human_policy`: how natural the move looked to KataGo's network and how often a player of the chosen human rank plays it. High human policy plus a large loss = a typical mistake for the level, worth a lesson. Very low human policy = an unusual slip.
+- `net_policy` / `human_policy`: how natural the move looked to KataGo's network and the probability assigned by the chosen human profile. High human policy plus a large loss = a typical mistake for the level, worth a lesson. Very low human policy = an unusual slip.
 - `theme`: the program's rule-based classification (reading / tactics, life and death, tenuki while threatened, over-defending / priority, shape / connection, endgame counting, direction of play). Use it as the default theme; override only with a stated reason.
 - `refutation` and `refutation_score`: the opponent's strongest punishment after the played move (opponent moves first) and where it leads. This is *what the mistake allows* — the core of a "why it's wrong" explanation. `better_line` is KataGo's continuation after the preferred move.
 - `status_changes`: predicted group ownership changes, plus actual captures. Legacy alive/dead labels are predictions under subsequent play, not proofs. Use restricted searches and evaluated lines for stronger tactical explanations.
 - `chain_before` / `chain_after`: the moves played in the same area shortly before and after, each with its point loss and notes (captured at N, status changes). This is the raw material for the cause→effect story in step 3a.
-- `target_policy` (when a stronger target profile was chosen): how often players two stones stronger play this move and what they play instead. Together with `human_policy` it gives the level framing directly: "common at your level, but a 5k plays D4 here 60% of the time".
+- `target_policy` (when a stronger target profile was chosen): the probability assigned by the stronger target profile to the played move and its preferred choice. Together with `human_policy` it gives the level framing directly: "the 5k model assigns D4 60% probability here".
 - `time_spent_seconds` and `fast` (when the record has clocks): timing can motivate a count-first habit, but does not establish why the mistake happened.
 
 Pick 2–3 candidates with distinct themes (see `references/go-teaching-concepts.md`); prefer candidates with a non-empty `refutation` and a clear `theme`. Fall back to `summary.biggest_mistakes` filtered by `player` only if fewer than two candidates exist.
@@ -79,7 +79,7 @@ Use `references/game-arc-commentary.md` to connect the selected lessons to the g
 - **Research the patterns supported by the selected phases and chains** — playing under strong stones, premature invasion, urgent-before-big, ladder direction — and carry those names into step 4's searches. Do not force a named pattern onto a phase that does not support one.
 - **Use supporting positions when needed.** In new format-5 reports, `context_moves` identifies the opponent's biggest mistakes, checkpoints and last move; `move_details[str(number)]` has their evaluations and searched alternatives. Read those entries from parsed.json to support a transition or an opportunity the student missed. Teaching candidates and praised moves retain their existing evidence. Do not make every supporting position a separate lesson.
 - **Use `openings` for the opening phase.** Each corner comes with a summary such as "4-4 point, small knight's approach, 3-3 invasion" and the first move KataGo disliked there. Research that exact pattern (step 4) and let the opening phase narrative say which corner went wrong and how. Geometric corner labels and first deviations are research leads, not validated joseki recognition. Verify the pattern before naming a joseki.
-- **Use `history` for the overview.** When present it has the student's numbers for this game against their recent average, the recurring themes across games, and the past games list. Open `overall_feedback` with the trend ("your opening loss is down from 4.1 to 2.3 over five games; reading mistakes remain the recurring theme") and put the table into `progress` (see html-build-guide). Do not invent trends when `history` is absent.
+- **Use current statistics for this game.** In format 5, read `facts.current` and use only `facts.history.prior_games` for comparisons. Possible earlier analyses of the same game are separated and excluded. The renderer derives `progress.rows` from these facts; write its supported summary. Legacy reports may supply an existing history table, but never substitute an older row for current statistics or invent a trend.
 - **Use `summary.timing` in new format-5 reports, or legacy `time_and_loss` when present**: compare recorded times for the student, checking sample counts and missing data. A timing/loss association can suggest a count-first habit; it cannot prove carelessness or time pressure. In format 5 each player has their own median split; do not compare the student with the bot's speed.
 
 Every arc claim obeys Board-fact discipline (below): only report captures, atari and liberties the report supports.
@@ -106,7 +106,7 @@ For each chosen mistake write:
 - **The variation**: walk through KataGo's `better_line` (the same as `preferred_pv`) and explain the significant moves in `variation_explanation`; for schema 2 reference the evidence and write the Best panel text; for legacy schema 1 copy the line into `better_line`.
 - **Life and death**: when `status_changes` predicts a group ownership loss, state it as a prediction; when the actual board records a capture, state that capture with the group's anchor point and stone count, and make the lesson about the status of that group.
 - **Graded alternatives**: from the move's candidate table (`candidates`, with `loss_vs_best`), take 2–4 other moves a beginner might consider and write one or two sentences each on *why* it is worse (or nearly as good). Set `loss_vs_best` and `quality` (best / good / inaccuracy / mistake / big mistake / blunder, thresholds 0.5 / 1.5 / 3 / 6 / 12 points). Include the played move's own quality as `played_quality`. The HTML shows each alternative on the board with a colour for its quality and a "Show all candidates" overlay.
-- **Level framing**: when human-policy numbers exist, say whether this is a common move at the student's level and what a stronger player would do instead, and put it in the lesson's `level_framing` field (rendered as an "At your level" callout). Prefer the target-profile numbers when they exist: "at 10k this move is played 30% of the time; at 3k almost never — a 3k plays D4 (60%) because ...".
+- **Level framing**: when human-policy numbers exist, say whether this is a common move at the student's level and what a stronger player would do instead, and put it in the lesson's `level_framing` field (rendered as an "At your level" callout). Prefer the target-profile numbers when they exist: "the 10k profile assigns the played move 30%; the 3k profile assigns it much less and prefers D4 (60%)". Bind each value to its actual move, check the comparison direction, and describe model probabilities rather than observed frequencies.
 - **The principle**: one sentence the student can remember, phrased as a habit.
 
 Also write the arc and summary content:
@@ -127,11 +127,12 @@ For each lesson concept, design 1–2 puzzles. Rules:
 
 - **Not from the game.** Never reuse the game position or a trivially edited copy of it.
 - **Non-obvious variations.** Start from the classic examples you found in step 4, then transform them: rotate or mirror, swap colours, move the fight to a different side or corner, add a stone or two that changes the reading without changing the lesson. The right answer should require applying the principle, not pattern-matching the lesson board.
-- **One concept, one clear best move.** Verify the position is coherent: no overlapping stones, no stones off the board, the correct move is on an empty point, groups you call "in atari" really have one liberty, the opponent's last move is a stone that is on the board.
-- **Graded wrong moves with punishments.** List 2–3 tempting wrong moves in `wrong_moves`, each with `quality`, an explanation of *why it falls short*, and a `refutation`: the opponent's 1–4 reply moves that punish it, as GTP coordinates on the puzzle board. When the student clicks a wrong move the HTML plays that punishment with numbered stones, which is far more convincing than a sentence. Model the punishments on the lesson's `refutation`: the puzzle should fail for the same *reason* the game move failed, in a different shape. Also give `generic_wrong_explanation` for clicks that hit none of them. Replay the complete line with captures, passes and ko; a captured point can legally become available again. For schema 2 include source, transformation, transfer relation, verification and correct_lines as specified in evidence-format5.md.
+- **One concept, one explicit objective.** Follow grounding-and-practice.md; distinguish bounded capture/survival from a searched preference. Accept all equally valid verified answers. Do not claim unique whole-board optimality from a sparse puzzle or a finite search. Verify the position is coherent: no overlapping stones, no stones off the board, the correct move is on an empty point, groups you call "in atari" really have one liberty, the opponent's last move is a stone that is on the board.
+- **Graded wrong moves with punishments.** List 2–3 tempting wrong moves in `wrong_moves`, each with `quality`, an explanation of *why it falls short*, and a `refutation`: the alternating continuation, beginning with the opponent's reply, through the strongest defence and necessary follow-up, as GTP coordinates on the puzzle board. When the student clicks a wrong move the HTML plays that punishment with numbered stones, which is far more convincing than a sentence. Model the punishments on the lesson's `refutation`: the puzzle should fail for the same *reason* the game move failed, in a different shape. Also give `generic_wrong_explanation` for clicks that hit none of them. Replay the complete line with captures, passes and ko; a captured point can legally become available again. For schema 2 include source, transformation, transfer relation, verification and correct_lines as specified in evidence-format5.md.
 - **Life-and-death puzzles.** When a lesson's theme is life and death, build the puzzle around a group that lives or dies with one move, and use the `status_changes` vocabulary ("this group has one eye; find the move that makes the second").
 - **Opening puzzles.** When the lesson comes from an `openings` first deviation, the puzzle is a corner position from the same pattern family (found in research) transformed to another corner or colour, asking for the standard move; wrong moves are the deviation and one other tempting mistake, with their punishments.
 - **Count-first puzzles.** When a selected lesson involves a reading mistake and recorded timing suggests a useful count-first habit, consider a capturing race or atari sequence where the obvious quick move loses and the answer needs one more liberty counted. A timing statistic alone does not require an extra puzzle or establish time pressure.
+- **Ground and verify.** Include the specific external example and original board, meaningful transformation, objective, strongest-defence reading, and replayed board assertions from grounding-and-practice.md. Use its optional KataGo checker when available. The original source solution does not automatically verify a transformed board.
 - **Validate.** Run `scripts/validate_lesson.py` (step 1a) and fix every problem before generating.
 - Include `opponent_last_move` so the student has context, a `hint`, and an `explanation` of the correct move.
 
@@ -160,7 +161,7 @@ The student will check your claims against the board. Only state what the report
 - Captures: only if `captured_at` or a `status_changes` row says so, or the diagram / compact move list shows it.
 - Life-and-death: legacy status_changes labels are ownership predictions. Only state unconditional life/death, seki or eye counts when the reading or verified board facts establish them.
 - Punishing sequences: quote `refutation` for the game position; for puzzles you design the sequence yourself and must verify it on the puzzle board.
-- Atari and liberties: only from the hints ("in atari: ...") or by counting on a diagram you can see.
+- Atari and liberties: verify using `go_rules.Position.group` and `board_checks` for the exact replayed position; do not infer safety from a group gaining liberties.
 - "Where the points went": use `loss_region`.
 - Do not invent ladders, nets or ko fights that the PV does not show. If you want to demonstrate a tactic beyond the PV, say that it is your own illustration.
 - Coordinates: GTP letters A–T without I, rows from the bottom. Check every coordinate you write against the stone lists.
@@ -175,6 +176,8 @@ Write as a patient teacher talking to a beginner:
 - Connect each lesson to a memorable habit.
 
 ## Reference files
+
+- `references/grounding-and-practice.md` — deterministic facts, checked draft claims, externally sourced variations and strongest-defence verification
 
 - `references/evidence-format5.md` — format 5, schema 2, evidence-driven panels and researched practice variations
 - `references/katago-review-format.md` — legacy markdown structure (formats 2–4), every field including refutations, chains, themes and arc facts, how to read diagrams and tables

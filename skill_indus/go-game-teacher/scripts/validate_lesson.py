@@ -7,6 +7,7 @@ import sys
 from urllib.parse import urlparse
 from go_rules import Position, sequence_position
 from lesson_contract import hydrate, PANELS
+from check_grounding import check_grounding, check_puzzle
 
 
 def coord_ok(mv, size):
@@ -38,8 +39,12 @@ def validate(parsed, authored):
     errors, warnings = [], []
     if parsed.get('reading_view_only'): return ['Use the complete parsed.json, not the brief reading view.'], []
     try: lesson=hydrate(parsed,authored)
-    except (ValueError,KeyError,TypeError) as e: return [str(e)], []
+    except (ValueError,KeyError,IndexError,TypeError) as e: return [str(e)], []
     schema=authored.get('schema_version',1)
+    try: errors.extend(check_grounding(parsed, authored))
+    except (KeyError,IndexError,ValueError,TypeError) as e: errors.append(f'grounding: {e}')
+    if schema==2 and authored.get('grounding_version')!=1:
+        warnings.append('Legacy draft: no fact audit or stronger puzzle checks. New lessons must set grounding_version: 1.')
     gi=parsed['game_info'];moves=parsed['moves'];student=gi.get('student','B')
     if not lesson.get('game_arc',{}).get('phases'): errors.append('game_arc must contain phases')
     if not lesson.get('lessons'): errors.append('at least one teaching lesson is required')
@@ -105,6 +110,8 @@ def validate(parsed, authored):
                     if not wrong.get('refutation'): errors.append(f'{tag}: wrong move {mv} needs a refutation')
                     if wrong.get('loss_vs_best') is not None and not wrong.get('evaluation_source'):
                         errors.append(f'{tag}: numerical loss for {mv} needs evaluation_source for this puzzle')
+            if authored.get('grounding_version') == 1:
+                errors.extend(f'{tag}: {e}' for e in check_puzzle(puzzle))
             if schema==2:
                 source=puzzle.get('source',{});url=urlparse(source.get('url',''))
                 if url.scheme not in ('https','http') or not url.netloc: errors.append(f'{tag}: external source URL required')

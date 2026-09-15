@@ -129,7 +129,7 @@ katago version        # must print "Using Metal backend"</pre>
       <tbody>
         <tr><th style="width:150px">KataGo executable</th><td><input class="path" id="s_katago" placeholder="automatic (KaTrain's engine)"></td></tr>
         <tr><th>Network (model)</th><td><input class="path" id="s_model" placeholder="automatic (KaTrain's network)"></td></tr>
-        <tr><th>Analysis config</th><td><input class="path" id="s_config" placeholder="automatic (built-in config)"></td></tr>
+        <tr><th>Analysis config override</th><td><input class="path" id="s_config" placeholder="Automatic — loading selected config…"><div class="status" id="configsource"></div></td></tr>
         <tr><th>Human-style network</th><td><input class="path" id="s_human" placeholder="automatic (KaTrain's human-like model, if set)"></td></tr>
         <tr><th>Watch folder</th><td><input class="path" id="s_watch" placeholder="optional: new .sgf files saved here are analysed automatically (e.g. KaTrain's save folder)"></td></tr>
         <tr><th>Profile for watched games</th><td><input class="path" id="s_watch_profile" placeholder="optional human profile for dropped / watched games, e.g. rank_10k"></td></tr>
@@ -275,6 +275,8 @@ async function loadSettings() {
     $('s_katago').value = sv.katago || ''; $('s_model').value = sv.model || ''; $('s_config').value = sv.config || ''; $('s_human').value = sv.human_model || '';
     $('s_watch').value = sv.watch_dir || ''; $('s_watch_profile').value = sv.watch_human_profile || ''; $('s_skill').value = sv.skill_dir || '';
     const a = d.active;
+    $('s_config').placeholder = 'Automatic — currently selected: ' + a.config;
+    $('configsource').textContent = 'Selected config: ' + a.config + '. Priority: flag/environment → saved override → KaTrain external config → ~/.katago/default_analysis.cfg → built-in default.';
     $('enginesource').innerHTML = 'In use now — engine <code>' + esc(a.katago) + '</code>, network <code>' + esc(a.model) + '</code>, config <code>' + esc(a.config) + '</code>'
       + (a.human_model ? ', human network <code>' + esc(a.human_model) + '</code>' : ', no human network')
       + '.<br>Chosen from: ' + esc(d.source) + '. Settings file: <code>' + esc(d.path) + '</code>';

@@ -494,6 +494,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('input'); ap.add_argument('output'); ap.add_argument('--full', action='store_true')
     ap.add_argument('--brief-output', help='Optional prose-model reading view; do not use it to generate HTML')
+    ap.add_argument('--facts-output', help='Derived facts for the teaching agent; no additional user upload')
     args = ap.parse_args()
     with open(args.input, encoding='utf-8') as f: text = f.read()
     result = parse_review(text, full=args.full)
@@ -502,6 +503,9 @@ def main():
     if args.brief_output:
         from lesson_contract import brief
         with open(args.brief_output,'w',encoding='utf-8') as f: json.dump(brief(result),f,indent=1,ensure_ascii=False)
+    if args.facts_output:
+        from teaching_facts import build_facts
+        with open(args.facts_output,'w',encoding='utf-8') as f: json.dump(build_facts(result),f,indent=1,ensure_ascii=False)
     full = args.full
     t = result['teaching']
     print(f"Report format {result['report_format']}  Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "

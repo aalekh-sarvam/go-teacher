@@ -62,7 +62,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
       "player_color": "B",
       "played_quality": "big mistake",
       "theme": "life and death",
-      "level_framing": "At 10k this move is played 30% of the time; at 3k almost never — a 3k plays D4 (60%) because it saves the D3 stones first.",
+      "level_framing": "The 10k model assigns the played move 30%; the 3k model assigns it much less and prefers D4 (60%). Explain the supported reason separately.",
       "refutation": ["F2", "D8", "G2", "C4"],
       "refutation_explanation": "2-3 sentences walking the numbered punishment: after 1 (F2) the D3 stones have one liberty; 3 (G2) captures them...",
       "better_line": ["D4", "G4", "C4", "E2"],
@@ -96,7 +96,6 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
     {
       "move_number": 21,
       "move": "G8",
-      "rating": "2 kyu",
       "explanation": "This move secured the corner while keeping sente. A strong player would recognize this as the largest point on the board."
     }
   ],
@@ -149,13 +148,13 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 - `correct_moves` — array of accepted correct answers (usually 1, sometimes 2)
 - `hint` — text shown when user clicks "Hint"
 - `explanation` — shown after a correct answer and in the evaluations overlay
-- `wrong_moves` — 2–3 tempting wrong answers, each `{move, quality, loss_vs_best, refutation, explanation}`. Clicking one shows its quality badge and explanation, and plays `refutation` (the opponent's 1–4 punishing replies, opponent first, GTP coordinates) on the board with numbered stones. Every refutation move must be an empty point after the wrong move is placed; the generator does not validate this.
-- `generic_wrong_explanation` — shown for clicks that match none of the listed moves
+- `wrong_moves` — 2–3 tempting wrong answers, each `{move, quality, loss_vs_best, refutation, explanation}`. Clicking one shows its quality badge and explanation, and plays `refutation` (the full alternating continuation, opponent first, GTP coordinates) on the board with numbered stones. The validator replays captures, passes and ko to check each successive move; the strongest defence still needs verification.
+- `generic_wrong_explanation` — retained for compatibility. Unlisted clicks are now labelled unverified rather than wrong.
 
 **Good move object:**
 - `move_number` — which move in the game (the board replays all moves up to and including this one)
 - `move` — GTP coordinate of the good move (shown with a green circle marker)
-- `rating` — a fun kyu/dan rating estimate (e.g., "3 kyu", "1 dan") shown as a badge. This is subjective and meant to be encouraging — estimate what level of player would typically find this move.
+- `rating` is optional and should normally be omitted. A badge is shown only with `rating_source` supporting that exact assessment. Do not invent a kyu/dan strength to encourage the student.
 - `explanation` — why this move was good, in beginner-friendly language
 
 **Concept learned object:**

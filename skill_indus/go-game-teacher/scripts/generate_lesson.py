@@ -304,13 +304,13 @@ function initPuzzle(idx, data) {
                 }
                 renderer.markers = markers.filter(m=>!m.stone || renderer.board.grid[m.y][m.x]===m.stone);
                 feedback.innerHTML = '<p class="wrong"><span class="quality-badge" style="background:' + col + '">' + (wrong.quality || 'mistake') + '</span> '
-                    + clickedGtp + ' is a natural try, but not the best move. ' + htmlText(wrong.explanation) + '</p><p class="hint-text">Try again, or use "Show evaluations".</p>';
+                    + clickedGtp + ' falls short of this exercise’s goal. ' + htmlText(wrong.explanation) + '</p><p class="hint-text">Try again, or use "Show evaluations".</p>';
                 feedback.className = 'feedback wrong';
             } else {
                 renderer.markers = markers.filter(m=>!m.stone || renderer.board.grid[m.y][m.x]===m.stone);
-                feedback.innerHTML = '<p class="wrong">&#10007; Not quite. ' + clickedGtp + ' is not the best move here. '
-                    + htmlText(data.generic_wrong_explanation || 'Ask yourself what the opponent\'s last move threatens and where the biggest point is.') + '</p>';
-                feedback.className = 'feedback wrong';
+                feedback.innerHTML = '<p>' + clickedGtp + ' has not been checked in this exercise. Compare the evaluated choices or read its continuation before judging it.</p>';
+                feedback.className = 'feedback';
+                renderer.markers[renderer.markers.length-1].color = '#667788';
             }
         }
         renderer.draw();
@@ -324,7 +324,7 @@ function initPuzzle(idx, data) {
             const xy = gtpToXY(mv, size);
             if (xy) { markers.push({x:xy[0], y:xy[1], type:'circle', color:'#2a2'}); markers.push({x:xy[0], y:xy[1], type:'label', color:'#000', text:'★'}); }
         }
-        var rows = '<li><span class="quality-badge" style="background:#2a2">best</span> <strong>' + data.correct_moves.join(', ') + '</strong> — ' + htmlText(data.explanation) + '</li>';
+        var rows = '<li><span class="quality-badge" style="background:#2a2">meets the goal</span> <strong>' + data.correct_moves.join(', ') + '</strong> — ' + htmlText(data.explanation) + '</li>';
         for (const w of (data.wrong_moves || [])) {
             const xy = gtpToXY(w.move, size);
             const col = qualityColor(w.quality, w.loss_vs_best);
@@ -637,13 +637,14 @@ def generate_html(parsed_data, lesson_data):
             'move': gm['move'],
             'board_size': gm_board_size,
         })
+        rating = (' <span class="rating-badge">' + escape_html(gm['rating']) + '</span>') if gm.get('rating') and gm.get('rating_source') else ''
         gm_card = f'''
 <div class="good-move-card">
   <div class="board-container">
     <canvas id="gboard-{i}" width="280" height="280"></canvas>
   </div>
   <div class="move-info">
-    <h3>Move {gm['move_number']}: {escape_html(gm['move'])} <span class="rating-badge">{escape_html(gm['rating'])}</span></h3>
+    <h3>Move {gm['move_number']}: {escape_html(gm['move'])} {rating}</h3>
     <p>{escape_html(gm['explanation'])}</p>
   </div>
 </div>'''
@@ -654,7 +655,7 @@ def generate_html(parsed_data, lesson_data):
         good_moves_section = f'''
 <section class="good-moves">
   <h2>Moves You Played Well</h2>
-  <p style="margin-bottom:16px;color:#666;">Not everything was a mistake! Here are moves where you found the right idea. The rating is just for fun &mdash; an estimate of what level of player would typically find this move.</p>
+  <p style="margin-bottom:16px;color:#666;">Here are choices worth repeating, with the evidence for what you did well.</p>
   <div class="board-legend">
     <span class="legend-item"><span class="legend-swatch legend-square"></span> Opponent's last move</span>
     <span class="legend-item"><span class="legend-swatch legend-circle-green"></span> Your good move</span>
@@ -687,7 +688,8 @@ def generate_html(parsed_data, lesson_data):
       </div>
     </div>
     <div class="lesson-side">
-      <p class="puzzle-instructions">{player_text} to play. Find the best move — click on the board!</p>
+      <p class="puzzle-instructions">{player_text} to play. Find a move that meets the goal — click on the board!</p>
+      {('<p class="hint-text"><strong>Goal:</strong> ' + escape_html(puzzle['objective'].get('description','')) + '</p>') if puzzle.get('objective') else ''}
       {('<p class="hint-text">' + escape_html(puzzle.get('transfer_explanation','')) + '</p>') if puzzle.get('transfer_explanation') else ''}
       {('<p class="hint-text">Adapted from <a href="' + escape_html(puzzle['source'].get('url','')) + '" target="_blank" rel="noopener">' + escape_html(puzzle['source'].get('title','external example')) + '</a>. ' + escape_html(puzzle.get('transformation','')) + '</p>') if puzzle.get('source') else ''}
       <div class="feedback" id="pfeedback-{i}"></div>
@@ -753,6 +755,7 @@ def generate_html(parsed_data, lesson_data):
             'evidence': l.get('_evidence', {}),
             'difficulty': l.get('_difficulty', {}),
             'panels': l.get('panels', {}),
+            'sequence_explanations': l.get('sequence_explanations', {}),
             'alternative_explanations': l.get('alternative_explanations', {}),
             'alternatives': [
                 {
@@ -826,6 +829,8 @@ button:focus-visible,select:focus-visible {{ outline:3px solid #ba8c36;outline-o
   </div>
 </header>
 
+<details class="game-context">
+<summary style="cursor:pointer;padding:18px;font-weight:700">Game overview, development and progress</summary>
 <section class="overview">
   <h2>Game Overview</h2>
   <div class="overview-text">
@@ -836,6 +841,7 @@ button:focus-visible,select:focus-visible {{ outline:3px solid #ba8c36;outline-o
 {arc_section}
 
 {progress_section}
+</details>
 
 <section class="perspective-bar" aria-label="Lesson perspective">
   <div><strong>Explore the sequences</strong><p>Choose whose choices you want to follow.</p></div>

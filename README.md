@@ -77,7 +77,7 @@ Go Teacher resolves each file separately, in this order:
 |---|---|---|
 | KataGo executable | `--katago`, `GO_TEACHER_KATAGO` | Engine settings card → KaTrain's settings → KaTrain's bundled engine → `/opt/homebrew/bin/katago` |
 | Network | `--model`, `GO_TEACHER_MODEL` | Engine settings card → KaTrain's settings → KaTrain's bundled network → `~/.katago/default_model.bin.gz` |
-| Analysis config | `--config`, `GO_TEACHER_CONFIG` | Engine settings card → a config you set in KaTrain → the built-in config (Metal, 500 visits), written to `~/Library/Application Support/GoTeacher/analysis.cfg` |
+| Analysis config | `--config`, `GO_TEACHER_CONFIG` | Engine settings card → an external config you set in KaTrain → `~/.katago/default_analysis.cfg` → the built-in config (Metal, 500 visits), written to `~/Library/Application Support/GoTeacher/analysis.cfg` |
 | Human-style network | `--human-model`, `GO_TEACHER_HUMAN_MODEL`; `--no-human-model` disables | Engine settings card → KaTrain's human-like model → `~/.katago/default_human_model.bin.gz` → none |
 
 The **Engine settings** card in the app overrides KaTrain for people who do not use it; saving

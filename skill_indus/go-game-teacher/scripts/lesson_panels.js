@@ -44,8 +44,9 @@ function initLesson(idx, data, allMoves) {
         if(!seq && level==='engine') seq=kind==='played'?fallback('played_engine',[data.played_move,...(data.refutation||[])]):fallback('best_engine',data.better_line);
         return seq ? (panel==='played'&&level!=='engine'&&find('opponent_refutation')?[seq,find('opponent_refutation')]:[seq]) : [];
     }
-    function prose(text) {
+    function prose(text, label) {
         explain.replaceChildren();
+        if(label){const heading=document.createElement("strong");heading.textContent=label;explain.appendChild(heading);}
         for(const paragraph of (text||'').split(/\n\s*\n/)) {
             const p=document.createElement('p');p.textContent=paragraph;explain.appendChild(p);
         }
@@ -83,7 +84,10 @@ function initLesson(idx, data, allMoves) {
         options.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=s.id.startsWith('alternative_')?s.moves[0]:s.id==='opponent_refutation'?'Most likely opponent reply':s.id.startsWith('tree_')?s.moves.slice(0,3).join(' → '):s.id.startsWith('played')?'After your move':s.id.startsWith('best')?'After the better move':s.id.replaceAll('_',' ');selector.appendChild(o);});
         if(keepSelection && options.some(s=>s.id===previous))selector.value=previous;
         selector.hidden=options.length<2;current=options.find(s=>s.id===selector.value)||options[0]||null;
-        prose((data.panels||{})[panel] || (panel==='played'?data.explanation:panel==='best'?data.variation_explanation:panel==='position'?'Start with the position. Choose a panel to explore a consequence or a different plan.':''));
+        const specific = current && (data.sequence_explanations||{})[current.id];
+        const general = (data.panels||{})[panel] || (panel==='played'?data.explanation:panel==='best'?data.variation_explanation:panel==='position'?'Start with the position. Choose a panel to explore a consequence or a different plan.':'');
+        const label = specific ? 'Explanation of the selected sequence' : current && lessonPerspective!=='engine' ? 'Engine / general commentary — the selected human example may follow different moves' : current ? 'Engine / general commentary' : '';
+        prose(specific || general, label);
         details.replaceChildren();
         if(panel!=='position'&&!current)fact('Unavailable in this perspective. '+(panel==='local'?'Local reading is a restricted engine search.':panel==='alternatives'?'These branches were evaluated by the engine; human examples are in the played and better-plan panels.':Object.values(ev.unavailable||{}).join('; ')));
         if(current){
@@ -104,10 +108,10 @@ function initLesson(idx, data, allMoves) {
         if(panel==='local'){
             const l=ev.local_reading||{};
             if(l.stones)fact(`${l.group_color}: ${l.stones.join(', ')} · ${l.liberties} liberties before the move.`);
-            for(const t of l.trials||[])fact(`${t.first} first: ${t.prediction||t.reason||'unavailable'}${t.move?' · '+t.move:''}.`);
+            for(const t of l.trials||[])fact(`${t.first} first locally: ${t.prediction||t.reason||'unavailable'} for defender ${l.group_color}${t.move?' · '+t.move:''}.`);
             fact(l.caveat||l.reason||'No local reading available.');
         }
-        if(panel==='what_if')for(const c of ev.rollout_comparisons||[])if(c.level===lessonPerspective){fact('Best-start minus played-start endpoint: '+c.best_minus_played_for_student+' points for '+signName+'.');fact(c.caveat);}
+        if(panel==='what_if')for(const c of ev.rollout_comparisons||[])if(c.level===lessonPerspective){const d=c.best_minus_played_for_student;fact(typeof d==='number' ? `This sample comparison favours the ${d>0?'better':d<0?'played':'neither'} start by ${Math.abs(d).toFixed(1)} points for ${signName}.` : 'Sample comparison unavailable.');fact(c.caveat);}
         if(panel==='alternatives'&&current){const alt=(data.alternatives||[]).find(a=>a.move===current.moves[0]);const text=(data.alternative_explanations||{})[current.moves[0]]||(alt||{}).explanation;if(text)prose(text);if(alt&&typeof alt.loss_vs_best==='number')fact(alt.move+': '+alt.loss_vs_best.toFixed(1)+' points worse than the main search’s preferred move for '+signName+'.');}
         step=current ? Math.min(current.moves.length,panel==='what_if'?12:6) : 0;
         render();

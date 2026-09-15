@@ -19,12 +19,12 @@ use std::sync::{Arc, Mutex};
 
 /// Engine locations tried in order when no flag / environment variable is given:
 /// 1. whatever KaTrain is configured to use (`~/.katrain/config.json`, section `engine`),
-/// 2. the engine, network and config bundled inside KaTrain.app (its own default config),
+/// 2. the engine and network bundled inside KaTrain.app,
 /// 3. a hand-installed KataGo (`brew install katago`) with networks in `~/.katago`.
 const BREW_KATAGO: &str = "/opt/homebrew/bin/katago";
 
 /// The analysis config shipped inside the binary (Metal mux settings, 500 visits). Written to the
-/// settings directory on first run and used whenever no config is given.
+/// settings directory when no configured external or standard ~/.katago config is available.
 const EMBEDDED_ANALYSIS_CFG: &str = include_str!("../resources/analysis.cfg");
 
 /// Persistent settings: `~/Library/Application Support/GoTeacher/settings.json`.
@@ -88,7 +88,7 @@ struct Cli {
     /// Path to the KataGo neural-network model (default: ~/.katago/default_model.bin.gz, else KaTrain's).
     #[arg(long, env = "GO_TEACHER_MODEL")]
     model: Option<PathBuf>,
-    /// Path to the KataGo analysis config (default: ~/.katago/default_analysis.cfg, else KaTrain's).
+    /// Path to the KataGo analysis config (automatic: KaTrain external config, ~/.katago, built-in).
     #[arg(long, env = "GO_TEACHER_CONFIG")]
     config: Option<PathBuf>,
     /// Path to KataGo's human-style network, used for human policy heat maps
@@ -242,8 +242,7 @@ impl EnginePaths {
 }
 
 /// Pick engine files. For each file, in order: flag / environment variable, the settings file,
-/// then the fallbacks: executable and network from KaTrain (its settings, then its bundle) or a
-/// Homebrew KataGo with `~/.katago`; the analysis config always defaults to the embedded one.
+/// then KaTrain and ~/.katago. The embedded analysis config is the last fallback.
 pub fn resolve_engine(cli: &EnginePaths) -> (katago::EngineConfig, String) {
     let own = home().join(".katago");
     let saved = load_settings();
@@ -281,8 +280,11 @@ pub fn resolve_engine(cli: &EnginePaths) -> (katago::EngineConfig, String) {
         .unwrap_or_else(|| own.join("default_model.bin.gz"));
     // KaTrain's config counts only when the user set one (an absolute path outside KaTrain.app).
     let kt_user_config = kt.config.clone().filter(|p| res.as_ref().map_or(true, |r| !p.starts_with(r)));
-    let config = match pick(&cli.config, &saved.config, &[kt_user_config], "config", &mut sources) {
-        Some(p) => p,
+    let config = match select_analysis_config(&cli.config, &saved.config, kt_user_config.as_ref(), &own.join("default_analysis.cfg")) {
+        Some((p, source)) => {
+            sources.push(format!("config: {source}"));
+            p
+        },
         None => {
             sources.push("config: built-in default".to_string());
             default_config_path().unwrap_or_else(|_| own.join("default_analysis.cfg"))
@@ -294,6 +296,34 @@ pub fn resolve_engine(cli: &EnginePaths) -> (katago::EngineConfig, String) {
         pick(&cli.human_model, &saved.human_model, &[kt.human_model.clone(), None, Some(own.join("default_human_model.bin.gz"))], "human network", &mut sources)
     };
     (katago::EngineConfig { katago: katago_bin, model, config, human_model }, sources.join(", "))
+}
+
+/// Explicit overrides must fail visibly if invalid, rather than silently using another config.
+fn select_analysis_config(flag: &Option<PathBuf>, saved: &Option<PathBuf>, katrain: Option<&PathBuf>, standard: &std::path::Path) -> Option<(PathBuf, &'static str)> {
+    if let Some(p) = flag { return Some((p.clone(), "flag/env")); }
+    if let Some(p) = saved { return Some((p.clone(), "settings.json")); }
+    if let Some(p) = katrain.filter(|p| p.is_file()) { return Some((p.clone(), "KaTrain settings")); }
+    standard.is_file().then(|| (standard.to_owned(), "~/.katago"))
+}
+
+#[cfg(test)]
+mod config_tests {
+    use super::*;
+    #[test]
+    fn config_precedence_and_last_resort() {
+        let dir = std::env::temp_dir().join(format!("go-teacher-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let kt = dir.join("katrain.cfg"); let standard = dir.join("standard.cfg");
+        std::fs::write(&kt, "").unwrap(); std::fs::write(&standard, "").unwrap();
+        let flag = Some(dir.join("explicit-missing.cfg")); let saved = Some(dir.join("saved.cfg"));
+        assert_eq!(select_analysis_config(&flag, &saved, Some(&kt), &standard).unwrap().0, flag.clone().unwrap());
+        assert_eq!(select_analysis_config(&None, &saved, Some(&kt), &standard).unwrap().0, saved.unwrap());
+        assert_eq!(select_analysis_config(&None, &None, Some(&kt), &standard).unwrap().0, kt);
+        assert_eq!(select_analysis_config(&None, &None, None, &standard).unwrap().0, standard);
+        std::fs::remove_file(&standard).unwrap();
+        assert!(select_analysis_config(&None, &None, None, &standard).is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 /// True when the executable lives inside a `.app` bundle (launched from Finder / Dock).

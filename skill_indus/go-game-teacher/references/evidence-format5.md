@@ -123,6 +123,8 @@ and verify suitable explanations and examples. Go Magic remains the first resour
 
 ## Lesson schema 2 (author prose, reference evidence)
 
+For new lessons also set `grounding_version: 1` and follow [grounding-and-practice.md](grounding-and-practice.md). It defines fact tokens/checks, current statistics, sequence-specific explanations and stronger puzzle verification. The base schema below remains supported for older authored lessons.
+
 ```json
 {
   "schema_version": 2,
@@ -167,7 +169,7 @@ Each schema-2 puzzle uses the existing `title`, `concept_label`, `board_size`, `
 - `lesson_move_number`: reference the lesson whose idea transfers.
 - `evidence_focus`: one field from the table above (use `rollout_comparisons` for sampled futures).
 - `transfer_explanation`: why this new position tests the same principle.
-- `source`: `{ "url": "https://...", "title": "The external example actually consulted" }`.
+- `source`: `{ "url": "https://...", "title": "The external example actually consulted" }`. Grounded lessons also require `example_locator` and the original `position`, as described in grounding-and-practice.md.
 - `transformation`: describe meaningful changes to that external example. Rotation alone does
   not make a puzzle non-obvious; change surrounding support, liberties or the tempting response
   and re-check the resulting solution.
