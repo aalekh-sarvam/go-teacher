@@ -30,6 +30,10 @@ pub struct AnalysisOptions {
     /// A second, stronger human profile ("what would a player two stones stronger do").
     #[serde(default)]
     pub human_profile_target: Option<String>,
+    /// Working rank before this game (from progress.json), used to pick human profiles when the
+    /// upload gave none and the SGF has no rank for the student.
+    #[serde(default)]
+    pub prior_rank_value: Option<f64>,
     #[serde(default)]
     pub probes: crate::probes::ProbeOptions,
 }
@@ -45,6 +49,7 @@ impl Default for AnalysisOptions {
             two_pass: false,
             deep_visits: None,
             human_profile_target: None,
+            prior_rank_value: None,
             probes: Default::default(),
         }
     }

@@ -1280,6 +1280,11 @@ fn spawn_job_task(state: Shared, id: u64) {
                     max_visits: j.max_visits,
                     human_profile: j.human_profile.clone(),
                     human_profile_target: j.human_profile_target.clone(),
+                    prior_rank_value: {
+                        let (st, _) = crate::teaching::detect_student(&j.game, j.student);
+                        let name = match st { Color::Black => j.game.player_black.clone(), Color::White => j.game.player_white.clone() };
+                        crate::progress::prior_rank(&state.out_dir, name.as_deref(), st)
+                    },
                     student: j.student,
                     two_pass: j.two_pass,
                     deep_visits: j.deep_visits,

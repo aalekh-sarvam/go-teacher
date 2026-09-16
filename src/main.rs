@@ -664,6 +664,11 @@ async fn analyze_files(engine_cfg: katago::EngineConfig, out_dir: PathBuf, files
             max_visits: visits,
             human_profile: human_profile.clone(),
             human_profile_target: human_profile_target.clone(),
+            prior_rank_value: {
+                let (st, _) = teaching::detect_student(&game, student);
+                let name = match st { sgf::Color::Black => game.player_black.clone(), sgf::Color::White => game.player_white.clone() };
+                progress::prior_rank(&out_dir, name.as_deref(), st)
+            },
             student,
             two_pass,
             deep_visits,

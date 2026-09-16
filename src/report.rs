@@ -384,7 +384,9 @@ Recorded result: {}.\n",
     for r in &a.reviews {
         let crossed = (r.winrate_before - 0.5) * (r.winrate_after - 0.5) < 0.0 && (r.winrate_before - r.winrate_after).abs() >= 0.05;
         let swing = (r.winrate_before - r.winrate_after).abs() >= 0.15;
-        if crossed || swing {
+        // A swing measured on the shallow pass is noise unless the move also cost real points.
+        let reliable = a.deepened.is_empty() || (a.deepened.contains(&(r.number - 1)) && a.deepened.contains(&r.number)) || r.point_loss.abs() >= 3.0;
+        if (crossed || swing) && reliable {
             any = true;
             let _ = writeln!(
                 w,
@@ -507,13 +509,18 @@ in which case the winrate swing is meaningless and only the point loss counts.\n
     }
     let _ = writeln!(w, "### Good moves worth praising\n");
     if a.praise.is_empty() {
-        let _ = writeln!(w, "No move by the student stood out as the only good move in a live position.\n");
+        let captures = a.reviews.iter().filter(|r| r.color == student && r.stones_captured > 0).count();
+        if captures > 0 {
+            let _ = writeln!(w, "No move met the praise thresholds, although the student captured stones on {} move(s) (see the compact move list).\n", captures);
+        } else {
+            let _ = writeln!(w, "No move by the student met the praise thresholds in this game.\n");
+        }
     } else {
-        let _ = writeln!(w, "Moves where the student found KataGo's first choice and the second-best move was clearly worse (game still undecided).\n");
-        let _ = writeln!(w, "| Move | Played | Next best | Gap (pts) | Black winrate before |");
-        let _ = writeln!(w, "|---|---|---|---|---|");
+        let _ = writeln!(w, "Moves worth praising: captures and saves without losing points, KataGo's first choice when every other searched move was clearly worse, and best moves players at the student's level rarely find.\n");
+        let _ = writeln!(w, "| Move | Played | Kind | Why | Next best | Gap (pts) | Rating |");
+        let _ = writeln!(w, "|---|---|---|---|---|---|---|");
         for p in &a.praise {
-            let _ = writeln!(w, "| {} | {} {} | {} | {:.1} | {} |", p.number, p.color.name(), p.mv, p.second, p.gap, pct(p.winrate_before));
+            let _ = writeln!(w, "| {} | {} {} | {} | {} | {} | {:.1} | {} |", p.number, p.color.name(), p.mv, p.kind.label(), p.note, if p.second.is_empty() { "—" } else { &p.second }, p.gap, p.rating.as_deref().unwrap_or("—"));
         }
         let _ = writeln!(w);
     }
@@ -867,6 +874,47 @@ pub fn render_markdown(a: &GameAnalysis) -> String {
         let deep = a.probes.moments.iter().any(|p| p.move_number == t.number);
         let _ = writeln!(out, "| {} | {} {} | {} | {:.1} pts | {} | {} |", t.number, t.color.name(), t.mv, t.best.as_deref().unwrap_or("unknown"), t.point_loss, t.theme.label(), if deep {"available"} else {"base review"});
     }
+    // Student profile
+    out.push_str("\n## Student profile\n\n");
+    match a.probes.rank_fit.get("estimate").and_then(|e| e.get("wording")).and_then(|w| w.as_str()) {
+        Some(w) => {
+            let _ = writeln!(out, "The student {}.", w);
+            if let Some(phases) = a.probes.rank_fit.get("phases").and_then(|p| p.as_array()) {
+                let parts: Vec<String> = phases
+                    .iter()
+                    .filter(|f| f["phase"] != "whole game")
+                    .filter_map(|f| f.get("estimate").and_then(|e| e.get("rank_label")).and_then(|l| l.as_str()).map(|l| format!("{} {}", f["phase"].as_str().unwrap_or("?"), l)))
+                    .collect();
+                if !parts.is_empty() {
+                    let _ = writeln!(out, "By phase: {}.", parts.join(", "));
+                }
+            }
+        }
+        None => out.push_str("No rank estimate for this game (human model not loaded or too few student moves).\n"),
+    }
+    if let Some((v, label, n)) = crate::progress::working_rank(&a.history, a.probes.rank_fit.get("estimate").and_then(|e| e.get("rank_value")).and_then(|x| x.as_f64())) {
+        let _ = writeln!(out, "Working rank across the last {} analysed game{}: about {} (value {:.1}).", n, if n == 1 { "" } else { "s" }, label, v);
+    }
+    let _ = writeln!(out, "Human profiles used by the deeper searches: {}.", a.probes.profiles);
+    out.push_str("This is similarity to human play at the tested ranks in one game, not a rating; say \"plays like\", pick the level of explanation and puzzles from it.\n");
+
+    // Good moves
+    out.push_str("\n## Good moves\n\n");
+    if a.praise.is_empty() {
+        let captures = a.reviews.iter().filter(|r| r.color == student && r.stones_captured > 0).count();
+        if captures > 0 {
+            let _ = writeln!(out, "No move met the praise thresholds, but the student captured stones on {} move(s); see stones_captured in the move list.\n", captures);
+        } else {
+            out.push_str("No move met the praise thresholds in this game.\n");
+        }
+    } else {
+        out.push_str("| Move | Played | Why it is praised | Gap to next best (pts) | Stones captured | Rating |\n|---|---|---|---|---|---|\n");
+        for p in &a.praise {
+            let _ = writeln!(out, "| {} | {} {} | {} — {} | {:.1} | {} | {} |", p.number, p.color.name(), p.mv, p.kind.label(), p.note, p.gap, p.stones_captured, p.rating.as_deref().unwrap_or("—"));
+        }
+        out.push_str("\nRatings come from the human-style network: the weakest tested rank whose players choose the move first. Quote them with that source.\n");
+    }
+
     out.push_str("\n## How to use this report\n\nParse the block below with the go-game-teacher skill. It contains the complete move list, setup stones, game arc facts, praise, teaching evidence and sequence origins. The skill writes prose and references evidence by move number; its generator loads numerical facts directly. Large heatmap arrays remain in the application's JSON. The detailed per-move Markdown report remains available in the app.\n\n");
     out.push_str("The move list also records each move's point loss and resulting numeric Black score lead, with the initial evaluation recorded once. Use this timeline and the phase statistics for a short overview; keep the lesson focused on selected mistakes, replies and better choices. Timing is included only where recorded. Full variations are limited to teaching candidates, praise, the opponent’s biggest mistakes, checkpoints and the last move.\n\n");
     for p in &a.probes.moments {

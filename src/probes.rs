@@ -884,18 +884,20 @@ pub async fn analyze<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         .options
         .human_profile
         .clone()
-        .or_else(|| rank_profile(own_rank));
+        .or_else(|| rank_profile(own_rank))
+        .or_else(|| a.options.prior_rank_value.map(profile_for_value));
+    let student_source = if a.options.human_profile.is_some() { "upload" } else if rank_profile(own_rank).is_some() { "SGF rank" } else if a.options.prior_rank_value.is_some() { "working rank from earlier games" } else { "none" };
     let target = a
         .options
         .human_profile_target
         .clone()
-        .or_else(|| human.as_deref().and_then(stronger));
+        .or_else(|| human.as_deref().and_then(stronger).as_deref().and_then(stronger));
     let opponent = opts
         .opponent_profile
         .clone()
         .or_else(|| rank_profile(opp_rank))
         .or_else(|| human.clone());
-    out.profiles = json!({"student":human,"target":target,"opponent":opponent,"opponent_source":if opts.opponent_profile.is_some(){"explicit"}else if rank_profile(opp_rank).is_some(){"SGF rank"}else{"assumed same as student"},"small_board_caveat":sx!=19||sy!=19});
+    out.profiles = json!({"student":human,"target":target,"opponent":opponent,"student_source":student_source,"opponent_source":if opts.opponent_profile.is_some(){"explicit"}else if rank_profile(opp_rank).is_some(){"SGF rank"}else{"assumed same as student"},"small_board_caveat":sx!=19||sy!=19});
     let featured: Vec<_> = a.teaching.iter().take(opts.featured.clamp(1, 8)).collect();
     let mut run = Runner {
         engine,

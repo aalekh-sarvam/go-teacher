@@ -25,6 +25,44 @@ pub struct GameEntry {
     pub blunders: usize,
     pub themes: std::collections::BTreeMap<String, usize>,
     pub final_winrate_black: f64,
+    /// This game's rank estimate (numeric scale: 20k = -20 … 1d = 0) from the human-profile ladder.
+    #[serde(default)]
+    pub rank_estimate: Option<f64>,
+}
+
+/// Two entries describe the same game when the record's identity matches (not the analysis time).
+pub fn same_game(a: &GameEntry, b: &GameEntry) -> bool {
+    a.date == b.date && a.student_name == b.student_name && a.opponent_name == b.opponent_name && a.moves == b.moves && a.result == b.result && a.board == b.board
+}
+
+/// Exponentially weighted working rank over the last five distinct games (oldest first) and the
+/// current estimate. Returns (value, label, games counted).
+pub fn working_rank(history: &[GameEntry], current: Option<f64>) -> Option<(f64, String, usize)> {
+    let mut values: Vec<f64> = history.iter().rev().take(5).filter_map(|e| e.rank_estimate).collect();
+    values.reverse();
+    if let Some(c) = current {
+        values.push(c);
+    }
+    if values.is_empty() {
+        return None;
+    }
+    let mut acc = values[0];
+    for v in &values[1..] {
+        acc = 0.5 * acc + 0.5 * v;
+    }
+    Some((acc, crate::probes::rank_label(acc), values.len()))
+}
+
+/// The working rank before this game, for choosing the human profiles of the analysis.
+pub fn prior_rank(out_dir: &Path, student_name: Option<&str>, student: Color) -> Option<f64> {
+    let entries: Vec<GameEntry> = load(out_dir)
+        .into_iter()
+        .filter(|e| match (student_name, &e.student_name) {
+            (Some(x), Some(y)) => x == y,
+            _ => e.student == Some(student),
+        })
+        .collect();
+    working_rank(&entries, None).map(|(v, _, _)| v)
 }
 
 fn path(out_dir: &Path) -> std::path::PathBuf {
@@ -73,6 +111,7 @@ pub fn entry_for(a: &GameAnalysis) -> GameEntry {
         blunders: mine.iter().filter(|r| r.point_loss >= 12.0).count(),
         themes,
         final_winrate_black: a.turns.last().map(|t| t.winrate).unwrap_or(0.5),
+        rank_estimate: a.probes.rank_fit.get("estimate").and_then(|e| e.get("rank_value")).and_then(|v| v.as_f64()),
     }
 }
 
@@ -80,7 +119,8 @@ pub fn entry_for(a: &GameAnalysis) -> GameEntry {
 pub fn record(out_dir: &Path, a: &GameAnalysis) {
     let mut all = load(out_dir);
     let e = entry_for(a);
-    all.retain(|x| x.analysed_at != e.analysed_at);
+    // One entry per game: a re-analysis replaces the earlier record of the same game.
+    all.retain(|x| x.analysed_at != e.analysed_at && !same_game(x, &e));
     all.push(e);
     all.sort_by(|x, y| x.analysed_at.cmp(&y.analysed_at));
     if let Ok(t) = serde_json::to_string_pretty(&all) {
@@ -94,7 +134,7 @@ pub fn history_for(out_dir: &Path, a: &GameAnalysis) -> Vec<GameEntry> {
     let me = entry_for(a);
     load(out_dir)
         .into_iter()
-        .filter(|e| e.analysed_at < me.analysed_at)
+        .filter(|e| e.analysed_at < me.analysed_at && !same_game(e, &me))
         .filter(|e| match (&me.student_name, &e.student_name) {
             (Some(x), Some(y)) => x == y,
             _ => e.student == me.student,

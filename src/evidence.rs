@@ -2,6 +2,27 @@
 use crate::analysis::{Category, GameAnalysis, MoveReview};
 use crate::sgf::Color;
 use serde_json::{json, Value};
+/// "B D7", "W E3", ... — every sequence is written with its colours so a reader can never swap them.
+pub fn coloured(first: Color, moves: &[String]) -> Vec<String> {
+    let mut c = first;
+    moves
+        .iter()
+        .map(|m| {
+            let s = format!("{} {}", c.letter(), m);
+            c = c.opponent();
+            s
+        })
+        .collect()
+}
+
+fn colour_from_value(v: &Value) -> Option<Color> {
+    match v.as_str()? {
+        "Black" | "B" => Some(Color::Black),
+        "White" | "W" => Some(Color::White),
+        _ => None,
+    }
+}
+
 pub fn build(a: &GameAnalysis) -> Value {
     let g = &a.game;
     let student = a.student.unwrap_or(Color::Black);
@@ -14,7 +35,7 @@ pub fn build(a: &GameAnalysis) -> Value {
             // Extend the existing replay list; do not duplicate it as a separate timeline.
             // Scores stay Black-view even on White's moves. Loss belongs to the mover.
             let mut m = json!({"number":r.number,"color":r.color.letter(),"move":r.mv,
-                "point_loss":r.point_loss,"score_black":r.score_after});
+                "point_loss":r.point_loss,"score_black":r.score_after,"stones_captured":r.stones_captured});
             if let Some(seconds) = valid_time(r) {
                 m["time_spent_seconds"] = json!(seconds);
             }
@@ -34,6 +55,8 @@ pub fn build(a: &GameAnalysis) -> Value {
             v["engine_strongly_favoured_side_before"] = v["decided_before"].take();
             v.as_object_mut().unwrap().remove("decided_before");
             v["difficulty"] = crate::probes::difficulty(&a.turns[t.number - 1]);
+            v["refutation_with_colours"] = json!(coloured(t.color.opponent(), &t.refutation));
+            v["better_line_with_colours"] = json!(coloured(t.color, &t.better_line));
             if let Some(p) = a.probes.moments.iter().find(|p| p.move_number == t.number) {
                 let mut e = serde_json::to_value(p).unwrap();
                 if let Some(o) = e["ownership_plan"].as_object_mut() {
@@ -43,9 +66,14 @@ pub fn build(a: &GameAnalysis) -> Value {
                 // playable moves, evaluation provenance and origins, not duplicated sampler telemetry.
                 if let Some(sequences) = e["sequences"].as_array_mut() {
                     for sequence in sequences {
+                        let first = sequence.get("first_to_move").and_then(colour_from_value);
+                        let mvs: Vec<String> = sequence.get("moves").and_then(|m| m.as_array()).map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
                         if let Some(o) = sequence.as_object_mut() {
                             o.remove("probabilities");
                             o.remove("seed");
+                            if let Some(f) = first {
+                                o.insert("moves_with_colours".into(), json!(coloured(f, &mvs)));
+                            }
                         }
                     }
                 }
@@ -89,7 +117,7 @@ pub fn build(a: &GameAnalysis) -> Value {
             .first()
             .map(|c| c.score_lead)
             .unwrap_or(r.score_before);
-        let cs:Vec<_>=r.alternatives.iter().map(|c|json!({"move":c.mv,"loss_vs_best":crate::probes::sign(r.color)*(best-c.score_lead),"visits":c.visits,"pv":c.pv,"score_black":c.score_lead})).collect();
+        let cs:Vec<_>=r.alternatives.iter().map(|c|json!({"move":c.mv,"loss_vs_best":crate::probes::sign(r.color)*(best-c.score_lead),"visits":c.visits,"pv":c.pv,"pv_with_colours":coloured(r.color,&c.pv),"score_black":c.score_lead})).collect();
         details.insert(r.number.to_string(),json!({"number":r.number,"player":r.color.letter(),"move":r.mv,"point_loss":r.point_loss,"category":r.category.label(),"score_before":lead(r.score_before),"score_after":lead(r.score_after),"winrate_before":format!("{:.1}%",r.winrate_before*100.0),"winrate_after":format!("{:.1}%",r.winrate_after*100.0),"candidates":cs}));
     }
     let praise: Vec<_> = a
@@ -98,9 +126,36 @@ pub fn build(a: &GameAnalysis) -> Value {
         .map(|p| {
             let mut v = serde_json::to_value(p).unwrap();
             v["move_number"] = json!(p.number);
+            v["kind_label"] = json!(p.kind.label());
+            v["player"] = json!(p.color.letter());
             v
         })
         .collect();
+    // Student profile: this game's estimate from the human-profile ladder, per phase, the working
+    // rank across games, and which profiles the probes actually used.
+    let estimate = a.probes.rank_fit.get("estimate").cloned().unwrap_or(Value::Null);
+    let phase_estimates: Vec<Value> = a
+        .probes
+        .rank_fit
+        .get("phases")
+        .and_then(|p| p.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|f| f.get("estimate").map_or(false, |e| !e.is_null()))
+                .map(|f| json!({"phase": f["phase"], "estimate": f["estimate"]}))
+                .collect()
+        })
+        .unwrap_or_default();
+    let current_rank = estimate.get("rank_value").and_then(|v| v.as_f64());
+    let working = crate::progress::working_rank(&a.history, current_rank);
+    let student_profile = json!({
+        "estimate": estimate,
+        "phases": phase_estimates,
+        "working_rank": working.map(|(v, label, n)| json!({"rank_value": v, "rank_label": label, "games": n})),
+        "profiles_used": a.probes.profiles,
+        "sgf_rank": if student == Color::Black { g.rank_black.clone() } else { g.rank_white.clone() },
+        "caveat": "The estimate is the similarity of this game's moves to human play at the tested ranks (human-style network, one game). It is not a rating. Use it to choose the level of explanation and puzzles, and say 'plays like' rather than 'is'."
+    });
     let turning:Vec<_>=a.reviews.iter().filter(|r|(r.winrate_before-0.5)*(r.winrate_after-0.5)<0.0 || ((0.05..=0.95).contains(&r.winrate_before) && r.winrate_loss.abs()>=0.15)).map(|r|json!({"move_number":r.number,"color":r.color.letter(),"move":r.mv,"score_before":lead(r.score_before),"score_after":lead(r.score_after),"point_loss":r.point_loss})).collect();
     let mut accuracy = serde_json::Map::new();
     for c in [Color::Black, Color::White] {
@@ -123,15 +178,19 @@ pub fn build(a: &GameAnalysis) -> Value {
     }
     let initial = a.turns.iter().find(|t| t.turn == 0).map(|t|
         json!({"turn":0,"score_black":t.score_lead,"winrate_black":t.winrate,"visits":t.visits}));
-    let mut data = json!({"report_format":5,"evidence_version":1,
+    let mut data = json!({"report_format":5,"evidence_version":2,
         "game_info":{"board_size":g.size_x,"board_size_y":g.size_y,"black_player":g.player_black,"white_player":g.player_white,"student":student.letter(),"student_reason":a.student_reason,"num_moves":g.moves.len(),"komi":a.komi,"rules":a.rules,"handicap":g.handicap.unwrap_or(0),"setup_black":coords(&g.setup_black),"setup_white":coords(&g.setup_white),"initial_player":g.who_moves_first().letter(),"result":g.result,"date":g.date,"analysis_strength":a.visits_setting},
         "initial_position":initial,"moves":moves,"move_details":details,
         "context_moves":{"opponent_mistakes":opponent_moves,"checkpoints":checkpoints,"last_move":last_move},
         "teaching":{"student":student.letter(),"candidates":candidates,"praise":praise},
+        "student_profile":student_profile,
         "summary":{"accuracy":accuracy,"turning_points":turning,"timing":timing(a)},"arc":{"phases":a.phases,"status_changes":a.status_changes},"openings":a.openings,"history":a.history,
         "endgame_values":a.probes.endgame_values,"missed_opportunities":a.probes.missed_opportunities,"rank_fit":a.probes.rank_fit,"profiles":a.probes.profiles,
         "provenance":{"engine":a.engine_version,"started_at":a.started_at,"elapsed_seconds":a.elapsed_seconds,"probe_queries":a.probes.queries,"probe_seconds":a.probes.elapsed_seconds,"warnings":a.engine_warnings.iter().chain(a.probes.warnings.iter()).collect::<Vec<_>>(),"sgf_warnings":g.warnings},
         "interpretation":{"scores":"Black-view; B+ / W+","deltas":"beneficiary explicitly named; positive loss is a cost","status_changes":"ownership predictions, not life/death proof","sequences":"from_turn is actual moves before branching; first_to_move explicit; each pass changes player","human":"sampled examples, not opponent-adjusted severity","rank_fit":"profile similarity, not a calibrated rank","phases":"move-count heuristic",
+            "student_profile":"estimate.wording is the sentence to use; working_rank smooths the last five games; profiles_used are the human profiles the probes ran with",
+            "praise":"kind_label says why the move is praised (capture, saved a group, only good move, non-obvious best move, best move); rating comes from the human-profile ladder and must be quoted with rating_source",
+            "colours":"every *_with_colours list writes each move as 'B D7' / 'W E3'; copy those tokens when narrating, never bare coordinates",
             "moves":"score_black is the numeric Black lead AFTER this move; positive favours Black, negative White. Before move 1 use initial_position, otherwise the preceding move. point_loss belongs to the mover; negative values are search-estimate gains, not proof of superior play.",
             "accuracy":"Loss summaries clamp negative loss to zero; median averages the two middle values. top1/top3 are searched-choice counts, not percentages or rank estimates; ranked_moves gives coverage. Total loss is not final margin.",
             "timing":"Optional seconds derived from SGF clocks. Split at each player's own median, ties in at_or_below_median; missing/empty is unknown, not zero. Association is not causation.",
