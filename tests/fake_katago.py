@@ -4,7 +4,10 @@ plausible, deterministic numbers so the pipeline can be exercised without a GPU 
 
 Supports: `version` (prints a Metal-like banner), `analysis` (JSON lines protocol), `benchmark`.
 """
-import json, sys, math
+import json, sys, math, os
+# GT_FAKE_CHURN=1: at budgets >= 500 visits the evaluation curve shifts by a few turns, so the
+# quick-pass shortlist and the deep-pass shortlist differ (exercises candidate verification).
+CHURN = os.environ.get("GT_FAKE_CHURN") == "1"
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skill_indus/go-game-teacher/scripts"))
 from go_rules import Position
@@ -59,7 +62,9 @@ for line in sys.stdin:
             try: board.clone().play(mv);legal.append(mv)
             except ValueError: pass
         occupied={f"{COLS[x]}{sy-y}" for x,y in board.board}
-        wr = 0.5 + 0.3 * math.sin(turn / 3.0)
+        budget = q.get("maxVisits", 100)
+        phase_shift = 1.7 if (CHURN and budget >= 500) else 0.0
+        wr = 0.5 + 0.3 * math.sin(turn / 3.0 + phase_shift)
         # a pass by the side that just moved costs it points (so pass-value probes are meaningful)
         if turn >= 1 and turn - 1 < len(moves) and moves[turn - 1][1] == "pass":
             wr += -0.08 if moves[turn - 1][0] == "B" else 0.08

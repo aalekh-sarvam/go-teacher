@@ -55,6 +55,7 @@ pub fn build(a: &GameAnalysis) -> Value {
             v["engine_strongly_favoured_side_before"] = v["decided_before"].take();
             v.as_object_mut().unwrap().remove("decided_before");
             v["difficulty"] = crate::probes::difficulty(&a.turns[t.number - 1]);
+            v["evaluation_coverage"] = serde_json::to_value(crate::analysis::candidate_coverage(&a.turns, t.number, a.search_coverage.requested_deep_visits, a.search_coverage.two_pass_enabled)).unwrap();
             v["refutation_with_colours"] = json!(coloured(t.color.opponent(), &t.refutation));
             v["better_line_with_colours"] = json!(coloured(t.color, &t.better_line));
             if let Some(p) = a.probes.moments.iter().find(|p| p.move_number == t.number) {
@@ -77,10 +78,12 @@ pub fn build(a: &GameAnalysis) -> Value {
                         }
                     }
                 }
+                v["investigation_coverage"] = crate::probes::investigation_status(p);
                 v["evidence"] = e;
             } else {
-                v["evidence"] =
-                    json!({"unavailable":{"deeper_search":"not selected for featured analysis"}});
+                let reason = if a.options.probes.enabled { "outside_featured_budget" } else { "investigations_disabled" };
+                v["investigation_coverage"] = json!({"status": if a.options.probes.enabled { "not_selected" } else { "disabled" }, "reason": reason});
+                v["evidence"] = json!({"unavailable":{"teaching_investigations": if a.options.probes.enabled { "not selected for the featured budget; the deep evaluation of this move is separate (see evaluation_coverage)" } else { "teaching investigations disabled for this run" }}});
             }
             v
         })
@@ -184,6 +187,7 @@ pub fn build(a: &GameAnalysis) -> Value {
         "context_moves":{"opponent_mistakes":opponent_moves,"checkpoints":checkpoints,"last_move":last_move},
         "teaching":{"student":student.letter(),"candidates":candidates,"praise":praise},
         "student_profile":student_profile,
+        "search_coverage":a.search_coverage,
         "summary":{"accuracy":accuracy,"turning_points":turning,"timing":timing(a)},"arc":{"phases":a.phases,"status_changes":a.status_changes},"openings":a.openings,"history":a.history,
         "endgame_values":a.probes.endgame_values,"missed_opportunities":a.probes.missed_opportunities,"rank_fit":a.probes.rank_fit,"profiles":a.probes.profiles,
         "provenance":{"engine":a.engine_version,"started_at":a.started_at,"elapsed_seconds":a.elapsed_seconds,"probe_queries":a.probes.queries,"probe_seconds":a.probes.elapsed_seconds,"warnings":a.engine_warnings.iter().chain(a.probes.warnings.iter()).collect::<Vec<_>>(),"sgf_warnings":g.warnings},
@@ -191,6 +195,7 @@ pub fn build(a: &GameAnalysis) -> Value {
             "student_profile":"estimate.wording is the sentence to use; working_rank smooths the last five games; profiles_used are the human profiles the probes ran with",
             "praise":"kind_label says why the move is praised (capture, saved a group, only good move, non-obvious best move, best move); rating comes from the human-profile ladder and must be quoted with rating_source",
             "colours":"every *_with_colours list writes each move as 'B D7' / 'W E3'; copy those tokens when narrating, never bare coordinates",
+            "coverage":"evaluation_coverage says whether both positions around a candidate had a completed deep search (complete/incomplete/disabled/unknown) with actual and requested visits; investigation_coverage says whether the optional teaching investigations ran (available/partial/not_selected/disabled/unavailable). Lack of investigations never means lack of deep evaluation.",
             "moves":"score_black is the numeric Black lead AFTER this move; positive favours Black, negative White. Before move 1 use initial_position, otherwise the preceding move. point_loss belongs to the mover; negative values are search-estimate gains, not proof of superior play.",
             "accuracy":"Loss summaries clamp negative loss to zero; median averages the two middle values. top1/top3 are searched-choice counts, not percentages or rank estimates; ranked_moves gives coverage. Total loss is not final margin.",
             "timing":"Optional seconds derived from SGF clocks. Split at each player's own median, ties in at_or_below_median; missing/empty is unknown, not zero. Association is not causation.",

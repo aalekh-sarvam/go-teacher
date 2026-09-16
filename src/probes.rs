@@ -810,6 +810,40 @@ async fn rank_fit<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
     )
 }
 
+/// Featured investigations go to the biggest final losses (ties: earlier move first), then are
+/// presented chronologically. The shortlist itself stays chronological.
+pub fn select_featured_candidates(teaching: &[crate::teaching::TeachingCandidate], max: usize) -> Vec<&crate::teaching::TeachingCandidate> {
+    let mut ranked: Vec<&crate::teaching::TeachingCandidate> = teaching.iter().collect();
+    ranked.sort_by(|x, y| y.point_loss.partial_cmp(&x.point_loss).unwrap_or(std::cmp::Ordering::Equal).then(x.number.cmp(&y.number)));
+    let mut chosen: Vec<&crate::teaching::TeachingCandidate> = ranked.into_iter().take(max).collect();
+    chosen.sort_by_key(|t| t.number);
+    chosen
+}
+
+/// Aggregate status of a moment's additional investigations from its component outcomes.
+pub fn investigation_status(m: &Moment) -> Value {
+    let attempted = ["pass_comparison", "ownership_plan", "tree", "local_reading", "human perspectives"];
+    let mut failed: Vec<String> = Vec::new();
+    let mut inapplicable: Vec<String> = Vec::new();
+    for (k, v) in &m.unavailable {
+        let reason = v.to_ascii_lowercase();
+        if reason.contains("not applicable") || reason.contains("no profile") || reason.contains("not loaded") || reason.contains("no nearby") {
+            inapplicable.push(format!("{k}: {v}"));
+        } else {
+            failed.push(format!("{k}: {v}"));
+        }
+    }
+    let core_ok = !m.pass_comparison.is_null() && !m.tree.is_empty();
+    let status = if failed.is_empty() && core_ok {
+        "available"
+    } else if core_ok || !m.sequences.is_empty() {
+        "partial"
+    } else {
+        "unavailable"
+    };
+    json!({"status": status, "failed": failed, "inapplicable": inapplicable, "components_attempted": attempted})
+}
+
 /// Numeric rank scale: 20k = -20 … 1k = -1, 1d = 0, 2d = 1 … (dan ranks adjacent to 1k).
 pub fn rank_value(profile: &str) -> Option<f64> {
     let r = profile.strip_prefix("rank_")?;
@@ -898,7 +932,7 @@ pub async fn analyze<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         .or_else(|| rank_profile(opp_rank))
         .or_else(|| human.clone());
     out.profiles = json!({"student":human,"target":target,"opponent":opponent,"student_source":student_source,"opponent_source":if opts.opponent_profile.is_some(){"explicit"}else if rank_profile(opp_rank).is_some(){"SGF rank"}else{"assumed same as student"},"small_board_caveat":sx!=19||sy!=19});
-    let featured: Vec<_> = a.teaching.iter().take(opts.featured.clamp(1, 8)).collect();
+    let featured = select_featured_candidates(&a.teaching, opts.featured.clamp(1, 8));
     let mut run = Runner {
         engine,
         a,
@@ -1304,6 +1338,7 @@ mod tests {
             score_stdev: None,
             visits: 100,
             candidates: vec![],
+            search: None,
             ownership: None,
             policy: None,
             human_policy: None,

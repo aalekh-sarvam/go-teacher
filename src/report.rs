@@ -640,7 +640,10 @@ Every other move is one line: loss, KataGo's rank of the move, then Black's winr
             let _ = writeln!(w);
             in_brief_list = false;
         }
-        let deep = if a.deepened.contains(&(r.number - 1)) && a.deepened.contains(&r.number) { " ◆" } else { "" };
+        let deep = match a.search_coverage.requested_deep_visits {
+            Some(d) => if crate::analysis::position_deep(&a.turns[r.number - 1], d) && crate::analysis::position_deep(&a.turns[r.number], d) { " ◆" } else { "" },
+            None => if !a.deepened.is_empty() && a.deepened.contains(&(r.number - 1)) && a.deepened.contains(&r.number) { " ◆" } else { "" },
+        };
         let _ = writeln!(w, "### Move {}: {} {}{}\n", r.number, r.color.name(), r.mv, deep);
         let rank_txt = match r.rank {
             Some(0) => "KataGo's top choice".to_string(),
@@ -869,10 +872,26 @@ pub fn render_markdown(a: &GameAnalysis) -> String {
     let _ = writeln!(out, "{} vs {} · {}×{} · student {} · {} moves.\n", opt(&a.game.player_black), opt(&a.game.player_white), a.game.size_x, a.game.size_y, student.name(), a.game.moves.len());
     let _ = writeln!(out, "{}; {}. Teaching searches: {} queries in {:.0}s.\n", a.engine_version, a.visits_setting, a.probes.queries, a.probes.elapsed_seconds);
     out.push_str("Scores are always Black's perspective (B+ / W+). Positive losses are costs to the named mover. Winrate saturation is not a prediction that a human game cannot turn around. Pass comparisons are whole-board estimates. Ownership and restricted searches are evidence, not life/death proofs. Human continuations are sampled illustrations; their endpoint differences include later choices. Profile fit is not a calibrated rank.\n\n");
-    out.push_str("## Teaching candidates\n\n| Move | Student move | Better move | Loss for mover | Theme | Deeper evidence |\n|---|---|---|---|---|---|\n");
+    out.push_str("## Teaching candidates\n\n| Move | Student move | Better move | Loss for mover | Theme | Deep evaluation | Teaching investigations |\n|---|---|---|---|---|---|---|\n");
     for t in &a.teaching {
-        let deep = a.probes.moments.iter().any(|p| p.move_number == t.number);
-        let _ = writeln!(out, "| {} | {} {} | {} | {:.1} pts | {} | {} |", t.number, t.color.name(), t.mv, t.best.as_deref().unwrap_or("unknown"), t.point_loss, t.theme.label(), if deep {"available"} else {"base review"});
+        let cov = crate::analysis::candidate_coverage(&a.turns, t.number, a.search_coverage.requested_deep_visits, a.search_coverage.two_pass_enabled);
+        let deep_txt = match cov.status.as_str() {
+            "complete" => format!("Complete · {} / {} visits", cov.before.visits.min(cov.after.visits), cov.before.requested_visits.unwrap_or(0)),
+            "incomplete" => format!("Incomplete · before {}, after {}", cov.before.status, cov.after.status),
+            "disabled" => format!("Two-pass disabled · {} visits", cov.before.visits.min(cov.after.visits)),
+            _ => "Coverage not recorded".to_string(),
+        };
+        let inv_txt = match a.probes.moments.iter().find(|p| p.move_number == t.number) {
+            Some(p) => match crate::probes::investigation_status(p)["status"].as_str().unwrap_or("") { "available" => "Available", "partial" => "Partial", _ => "Unavailable" }.to_string(),
+            None => if a.options.probes.enabled { "Not selected".to_string() } else { "Disabled".to_string() },
+        };
+        let _ = writeln!(out, "| {} | {} {} | {} | {:.1} pts | {} | {} | {} |", t.number, t.color.name(), t.mv, t.best.as_deref().unwrap_or("unknown"), t.point_loss, t.theme.label(), deep_txt, inv_txt);
+    }
+    let c = &a.search_coverage;
+    if c.two_pass_enabled {
+        let _ = writeln!(out, "\nDeep evaluation: {} of {} candidates verified on both surrounding positions at {} requested visits; {} verification round{} added {} position{} beyond the initial deep pass. \"Not selected\" in the last column means the optional investigations (variation tree, local reading, human lines) were not run for that move; its deep evaluation, better line and refutation are unaffected.", c.verified_candidates, c.final_candidates, c.requested_deep_visits.unwrap_or(0), c.verification_rounds, if c.verification_rounds == 1 { "" } else { "s" }, c.additional_positions, if c.additional_positions == 1 { "" } else { "s" });
+    } else {
+        out.push_str("\nSingle-pass run: every position was searched once at the configured budget; candidate verification was not requested.\n");
     }
     // Student profile
     out.push_str("\n## Student profile\n\n");
@@ -910,7 +929,8 @@ pub fn render_markdown(a: &GameAnalysis) -> String {
     } else {
         out.push_str("| Move | Played | Why it is praised | Gap to next best (pts) | Stones captured | Rating |\n|---|---|---|---|---|---|\n");
         for p in &a.praise {
-            let _ = writeln!(out, "| {} | {} {} | {} — {} | {:.1} | {} | {} |", p.number, p.color.name(), p.mv, p.kind.label(), p.note, p.gap, p.stones_captured, p.rating.as_deref().unwrap_or("—"));
+            let gap_txt = if p.second.is_empty() { "—".to_string() } else if p.gap >= 0.0 { format!("{:.1}", p.gap) } else { format!("{:.1} (another searched move scored higher)", p.gap) };
+            let _ = writeln!(out, "| {} | {} {} | {} — {} | {} | {} | {} |", p.number, p.color.name(), p.mv, p.kind.label(), p.note, gap_txt, p.stones_captured, p.rating.as_deref().unwrap_or("—"));
         }
         out.push_str("\nRatings come from the human-style network: the weakest tested rank whose players choose the move first. Quote them with that source.\n");
     }

@@ -256,7 +256,8 @@ fn ensure_loaded(s: &AppState, id: u64) {
     let mut jobs = s.jobs.lock().unwrap();
     if let Some(j) = jobs.get_mut(&id) {
         j.game = Arc::new(analysis.game.clone());
-        j.live = analysis.turns.iter().map(|t| Some(LiveTurn::from(t))).collect();
+        let deep = analysis.search_coverage.requested_deep_visits;
+        j.live = analysis.turns.iter().map(|t| { let mut lt = LiveTurn::from(t); lt.deepened = deep.map_or(false, |d| crate::analysis::position_deep(t, d)); Some(lt) }).collect();
         j.markdown = Some(Arc::new(md));
         j.turns_total = analysis.turns.len();
         j.turns_done = analysis.turns.len();
@@ -1327,17 +1328,23 @@ fn spawn_job_task(state: Shared, id: u64) {
                     j.turns_total = total;
                     j.phase = phase.to_string();
                     if let Some(t) = turn {
-                        if let Some(slot) = j.live.get_mut(t.turn) {
-                            let mut lt = LiveTurn::from(t);
-                            lt.deepened = slot.is_some(); // a second visit to this position is the deep pass
-                            *slot = Some(lt);
-                        }
-                        j.last_updated_turn = Some(t.turn);
+                        // Merge by strength, never by arrival order: a verification result replaces a quick
+                        // result; a repeated quick result never downgrades a deep one.
+                        let deep_budget = if j.two_pass { Some(j.deep_visits.unwrap_or(1000)) } else { None };
                         if let Some(slot) = j.partial.get_mut(t.turn) {
-                            if slot.is_none() {
+                            if crate::analysis::prefer_stronger(slot.as_ref(), t) {
                                 *slot = Some(t.clone());
                             }
                         }
+                        if let Some(slot) = j.live.get_mut(t.turn) {
+                            let keep_old = slot.as_ref().map_or(false, |old| old.deepened && deep_budget.map_or(false, |d| !crate::analysis::position_deep(t, d)));
+                            if !keep_old {
+                                let mut lt = LiveTurn::from(t);
+                                lt.deepened = deep_budget.map_or(false, |d| crate::analysis::position_deep(t, d));
+                                *slot = Some(lt);
+                            }
+                        }
+                        j.last_updated_turn = Some(t.turn);
                     }
                 }
             };

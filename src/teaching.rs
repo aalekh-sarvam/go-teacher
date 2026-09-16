@@ -720,7 +720,9 @@ pub fn praise(reviews: &[MoveReview], changes: &[StatusChange], student: Color, 
         let killed = changes.iter().any(|c| c.number == r.number && c.group_color != r.color && (c.to == "dead" || c.to == "captured") && c.from != "dead");
         let saved = changes.iter().any(|c| c.number == r.number && c.group_color == r.color && c.to == "alive" && c.from != "alive");
         let human_low = r.human_prob.map_or(false, |p| p < 0.25);
-        let (kind, note) = if (r.stones_captured >= 3 || killed) && r.point_loss <= 1.0 {
+        // A big capture tolerates a little imprecision: up to 1 point plus a quarter point per stone (cap 3).
+        let capture_tolerance = (1.0 + 0.25 * r.stones_captured as f64).min(3.0);
+        let (kind, note) = if (r.stones_captured >= 3 || killed) && r.point_loss <= capture_tolerance {
             (PraiseKind::Capture, if r.stones_captured > 0 { format!("captured {} stone{} without losing points", r.stones_captured, if r.stones_captured == 1 { "" } else { "s" }) } else { "killed a group without losing points".to_string() })
         } else if saved && r.point_loss <= 1.0 {
             (PraiseKind::Save, "brought the student's own group back to life".to_string())

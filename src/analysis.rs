@@ -90,6 +90,10 @@ pub struct TurnEval {
     pub score_stdev: Option<f64>,
     pub visits: u64,
     pub candidates: Vec<Candidate>,
+    /// Provenance of this mainline evaluation: why it was searched and with what requested budget.
+    /// `None` on records older than this field; treat as unknown coverage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<SearchRecord>,
     /// Predicted ownership per point (row-major from the top-left), +1 = Black, -1 = White.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership: Option<Vec<f32>>,
@@ -102,6 +106,107 @@ pub struct TurnEval {
     /// Same for the target (stronger) profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub human_policy_target: Option<Vec<f32>>,
+}
+
+/// Why a mainline position was searched and with what budget. Only completed unrestricted
+/// searches of the actual game position produce one of these; probe and one-visit policy queries
+/// never do, so `search` is the single source of truth for deep coverage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchRecord {
+    /// "initial" (quick pass or single pass), "deep" (initial broad deep pass), "verification" (catch-up).
+    pub purpose: String,
+    /// Visit budget requested for this query (None = the engine config's maxVisits).
+    pub requested_visits: Option<u64>,
+    pub completed: bool,
+}
+
+impl SearchRecord {
+    /// A qualifying deep evaluation: completed at a requested budget of at least `deep`.
+    pub fn qualifies(&self, deep: u64) -> bool {
+        self.completed && self.requested_visits.map_or(false, |v| v >= deep)
+    }
+}
+
+/// Deep-coverage bookkeeping for a completed two-pass analysis.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SearchCoverage {
+    pub version: u32,
+    pub two_pass_enabled: bool,
+    pub requested_deep_visits: Option<u64>,
+    pub final_candidates: usize,
+    pub verified_candidates: usize,
+    /// Catch-up batches after the initial broad deep pass.
+    pub verification_rounds: usize,
+    /// Unique mainline positions newly searched by those batches.
+    pub additional_positions: usize,
+    /// Positions that were already covered when the loop asked for them (reuse).
+    pub reused_positions: usize,
+}
+
+/// Coverage of one candidate's two surrounding positions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CandidateCoverage {
+    pub status: String,
+    pub before: PositionCoverage,
+    pub after: PositionCoverage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionCoverage {
+    pub turn: usize,
+    pub visits: u64,
+    pub requested_visits: Option<u64>,
+    pub purpose: String,
+    pub status: String,
+}
+
+/// Is a position's retained evaluation a qualifying deep result?
+pub fn position_deep(t: &TurnEval, deep: u64) -> bool {
+    t.search.as_ref().map_or(false, |s| s.qualifies(deep))
+}
+
+pub fn position_coverage(t: &TurnEval, deep: Option<u64>, two_pass: bool) -> PositionCoverage {
+    let status = match (&t.search, deep, two_pass) {
+        (_, _, false) => "disabled",
+        (None, _, true) => "unknown",
+        (Some(s), Some(d), true) => if s.qualifies(d) { "complete" } else { "pending" },
+        (Some(_), None, true) => "unknown",
+    };
+    PositionCoverage {
+        turn: t.turn,
+        visits: t.visits,
+        requested_visits: t.search.as_ref().and_then(|s| s.requested_visits),
+        purpose: t.search.as_ref().map(|s| s.purpose.clone()).unwrap_or_else(|| "unknown".into()),
+        status: status.to_string(),
+    }
+}
+
+pub fn candidate_coverage(turns: &[TurnEval], number: usize, deep: Option<u64>, two_pass: bool) -> CandidateCoverage {
+    let before = position_coverage(&turns[number - 1], deep, two_pass);
+    let after = position_coverage(&turns[number], deep, two_pass);
+    let status = if !two_pass {
+        "disabled"
+    } else if before.status == "complete" && after.status == "complete" {
+        "complete"
+    } else if before.status == "unknown" || after.status == "unknown" {
+        "unknown"
+    } else {
+        "incomplete"
+    };
+    CandidateCoverage { status: status.to_string(), before, after }
+}
+
+/// Keep the stronger of two completed mainline evaluations of the same position; policy-only
+/// fields (target human policy) are merged separately by the caller.
+pub fn prefer_stronger(existing: Option<&TurnEval>, incoming: &TurnEval) -> bool {
+    match existing {
+        None => true,
+        Some(e) => {
+            let ev = e.search.as_ref().and_then(|s| s.requested_visits).unwrap_or(e.visits);
+            let iv = incoming.search.as_ref().and_then(|s| s.requested_visits).unwrap_or(incoming.visits);
+            iv >= ev
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -228,9 +333,12 @@ pub struct GameAnalysis {
     pub teaching: Vec<crate::teaching::TeachingCandidate>,
     #[serde(default)]
     pub praise: Vec<crate::teaching::PraiseCandidate>,
-    /// Turns re-analysed at `deep_visits` in two-pass mode.
+    /// Turns re-analysed at `deep_visits` in two-pass mode (both passes and catch-up).
     #[serde(default)]
     pub deepened: Vec<usize>,
+    /// Deep-coverage bookkeeping (two-pass runs); default for older records = unknown.
+    #[serde(default)]
+    pub search_coverage: SearchCoverage,
     /// Groups whose life-and-death status changed, per move.
     #[serde(default)]
     pub status_changes: Vec<crate::teaching::StatusChange>,
@@ -433,6 +541,7 @@ fn parse_turn(v: &Value, game: &GameRecord, opts: &AnalysisOptions) -> Result<Tu
         score_stdev: f(root, "scoreStdev"),
         visits: root.get("visits").and_then(|x| x.as_u64()).unwrap_or(0),
         candidates,
+        search: None,
         ownership: float_array(v, "ownership"),
         policy: float_array(v, "policy"),
         human_policy: float_array(v, "humanPolicy"),
@@ -685,7 +794,9 @@ pub async fn analyze_game(
 
     // Pass 1: every position. In two-pass mode this is deliberately cheap.
     let pass1_visits = if opts.two_pass { Some(opts.max_visits.unwrap_or(150)) } else { opts.max_visits };
+    let deep_budget: Option<u64> = if opts.two_pass { Some(opts.deep_visits.unwrap_or(1000)) } else { None };
     // Resume: keep positions already analysed by an interrupted run; analyse only the rest.
+    // Retained results without provenance are treated as quick-pass results (never as deep).
     let mut known: Vec<Option<TurnEval>> = match resume {
         Some(v) if v.len() == total1 => v,
         _ => vec![None; total1],
@@ -694,14 +805,18 @@ pub async fn analyze_game(
     let mut done = total1 - missing.len();
     let phase1 = if opts.two_pass { "pass 1 of 2: quick analysis of every position" } else { "analysing every position" };
     progress(done, total1, None, phase1);
+    let stamp = |mut t: TurnEval, purpose: &str, requested: Option<u64>| -> TurnEval {
+        t.search = Some(SearchRecord { purpose: purpose.to_string(), requested_visits: requested, completed: true });
+        t
+    };
     let first = run_query(engine, &game, &rules, komi, &opts, &missing, pass1_visits, &cancel, &mut warnings, |t| {
         done += 1;
-        progress(done, total1, Some(t), phase1);
+        progress(done, total1, Some(&stamp(t.clone(), "initial", pass1_visits)), phase1);
     })
     .await?;
     for t in first {
         let i = t.turn;
-        known[i] = Some(t);
+        known[i] = Some(stamp(t, "initial", pass1_visits));
     }
     let mut turns: Vec<TurnEval> = known.into_iter().map(|t| t.expect("all turns present")).collect();
 
@@ -710,34 +825,89 @@ pub async fn analyze_game(
     let mut teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
     let prelim_praise = crate::teaching::praise(&reviews, &crate::teaching::status_changes(&game, &turns), student, 6);
 
-    // Pass 2: re-analyse the key positions deeply and recompute everything from the merged turns.
+    // Pass 2: re-analyse the key positions deeply, then verify that every FINAL teaching candidate
+    // has deep results on both sides; keep searching until the shortlist is covered.
     let mut deepened: Vec<usize> = Vec::new();
-    if opts.two_pass {
-        let deep = deep_turns(&reviews, &teaching, &prelim_praise, student, n);
-        let deep_visits = Some(opts.deep_visits.unwrap_or(1000));
-        let total2 = total1 + deep.len();
-        let phase2 = format!("pass 2 of 2: deep re-analysis of {} key positions", deep.len());
+    let mut coverage = SearchCoverage { version: 1, two_pass_enabled: opts.two_pass, requested_deep_visits: deep_budget, ..Default::default() };
+    if let Some(deep_v) = deep_budget {
+        let covered = |turns: &[TurnEval], i: usize| position_deep(&turns[i], deep_v);
+        let initial: Vec<usize> = deep_turns(&reviews, &teaching, &prelim_praise, student, n).into_iter().filter(|&i| !covered(&turns, i)).collect();
+        let total2 = total1 + initial.len();
+        let phase2 = format!("pass 2 of 2: deep re-analysis of {} key positions", initial.len());
         progress(done, total2, None, &phase2);
-        let second = run_query(engine, &game, &rules, komi, &opts, &deep, deep_visits, &cancel, &mut warnings, |t| {
+        let second = run_query(engine, &game, &rules, komi, &opts, &initial, Some(deep_v), &cancel, &mut warnings, |t| {
             done += 1;
-            progress(done, total2, Some(t), &phase2);
+            progress(done, total2, Some(&stamp(t.clone(), "deep", Some(deep_v))), &phase2);
         })
         .await?;
         for t in second {
             let i = t.turn;
-            turns[i] = t;
+            let t = stamp(t, "deep", Some(deep_v));
+            if prefer_stronger(Some(&turns[i]), &t) {
+                turns[i] = t;
+            }
         }
-        deepened = deep;
+        deepened.extend(initial.iter().copied());
         reviews = build_reviews(&game, &turns, &opts);
         teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+
+        // Catch-up loop: the set of covered positions only grows, so this terminates.
+        let mut total_work = total2;
+        loop {
+            let mut required: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+            for t in &teaching {
+                required.insert(t.number - 1);
+                required.insert(t.number);
+            }
+            let missing: Vec<usize> = required.iter().copied().filter(|&i| !covered(&turns, i)).collect();
+            coverage.reused_positions += required.len() - missing.len();
+            if missing.is_empty() {
+                break;
+            }
+            coverage.verification_rounds += 1;
+            total_work += missing.len();
+            let verified_now = teaching.iter().filter(|t| covered(&turns, t.number - 1) && covered(&turns, t.number)).count();
+            let phase = format!(
+                "verifying newly selected teaching moves: {} of {} candidates verified, {} positions to search (round {})",
+                verified_now,
+                teaching.len(),
+                missing.len(),
+                coverage.verification_rounds
+            );
+            progress(done, total_work, None, &phase);
+            let batch = run_query(engine, &game, &rules, komi, &opts, &missing, Some(deep_v), &cancel, &mut warnings, |t| {
+                done += 1;
+                progress(done, total_work, Some(&stamp(t.clone(), "verification", Some(deep_v))), &phase);
+            })
+            .await?;
+            let mut progressed = 0usize;
+            for t in batch {
+                let i = t.turn;
+                let t = stamp(t, "verification", Some(deep_v));
+                if prefer_stronger(Some(&turns[i]), &t) {
+                    turns[i] = t;
+                    progressed += 1;
+                }
+            }
+            if progressed == 0 {
+                bail!("candidate verification made no progress on positions {:?}", missing);
+            }
+            coverage.additional_positions += progressed;
+            deepened.extend(missing.iter().copied());
+            reviews = build_reviews(&game, &turns, &opts);
+            teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+        }
+        deepened.sort_unstable();
+        deepened.dedup();
     }
 
-    // Target-profile human policy: one network evaluation per position, no search.
+    // Target-profile human policy: one network evaluation per position, no search. Policy-only:
+    // it never replaces a mainline evaluation or counts toward coverage.
     if let Some(target) = opts.human_profile_target.clone().filter(|t| !t.is_empty()) {
         let mut topts = opts.clone();
         topts.human_profile = Some(target);
         let all: Vec<usize> = (0..=n).collect();
-        let total3 = total1 + deepened.len() + all.len();
+        let total3 = total1 + deepened.len() + coverage.additional_positions + all.len();
         let phase3 = "target human profile: one network evaluation per position";
         progress(done, total3, None, phase3);
         match run_query(engine, &game, &rules, komi, &topts, &all, Some(1), &cancel, &mut warnings, |_| {
@@ -759,16 +929,38 @@ pub async fn analyze_game(
         }
     }
 
+    // Final invariant: in a two-pass run every final candidate must be deep on both sides.
+    if let Some(deep_v) = deep_budget {
+        let unverified: Vec<String> = teaching
+            .iter()
+            .filter(|t| !(position_deep(&turns[t.number - 1], deep_v) && position_deep(&turns[t.number], deep_v)))
+            .map(|t| format!("move {} (positions {} and {})", t.number, t.number - 1, t.number))
+            .collect();
+        if !unverified.is_empty() {
+            bail!("teaching candidates without complete deep evaluation: {}", unverified.join(", "));
+        }
+    }
+    coverage.final_candidates = teaching.len();
+    coverage.verified_candidates = match deep_budget {
+        Some(d) => teaching.iter().filter(|t| position_deep(&turns[t.number - 1], d) && position_deep(&turns[t.number], d)).count(),
+        None => 0,
+    };
+
     let status_changes = crate::teaching::status_changes(&game, &turns);
     let praise = crate::teaching::praise(&reviews, &status_changes, student, 5);
     let openings = crate::opening::corner_patterns(&game, &reviews);
     let phases = crate::teaching::phase_facts(&game, &turns, &reviews, &status_changes, student);
     let visits_setting = if opts.two_pass {
         format!(
-            "two-pass: every position at {} visits, then {} key positions at {} visits",
+            "two-pass: every position at {} visits, then {} positions at {} visits ({} in the initial deep pass, {} added by {} verification round{}); all {} final teaching candidates verified on both sides",
             pass1_visits.unwrap_or(0),
             deepened.len(),
-            opts.deep_visits.unwrap_or(1000)
+            opts.deep_visits.unwrap_or(1000),
+            deepened.len() - coverage.additional_positions,
+            coverage.additional_positions,
+            coverage.verification_rounds,
+            if coverage.verification_rounds == 1 { "" } else { "s" },
+            coverage.final_candidates
         )
     } else {
         match opts.max_visits {
@@ -802,6 +994,7 @@ pub async fn analyze_game(
         openings,
         history: Vec::new(),
         probes: Default::default(),
+        search_coverage: coverage,
     };
     analysis.probes = crate::probes::analyze(engine, &analysis, &cancel, done, &mut progress).await?;
     // Praise ratings from the human-profile ladder: the weakest rank whose players choose the move first.
@@ -823,6 +1016,45 @@ pub async fn analyze_game(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shortlist churn: with GT_FAKE_CHURN the deep pass changes which moves look like mistakes, so
+    /// candidates enter the shortlist after the initial deep pass. Every final candidate must still
+    /// have deep results on both sides, and the coverage record must show the catch-up work.
+    #[tokio::test]
+    async fn coverage_catch_up_verifies_final_shortlist() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let tmp = std::env::temp_dir().join(format!("go_teacher_churn_{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let model = tmp.join("model.bin.gz");
+        std::fs::write(&model, b"").unwrap();
+        let cfg = tmp.join("analysis.cfg");
+        std::fs::write(&cfg, "maxVisits = 10\n").unwrap();
+        std::env::set_var("GT_FAKE_CHURN", "1");
+        let config = crate::katago::EngineConfig { katago: root.join("tests/fake_katago.sh"), model: model.clone(), config: cfg, human_model: None };
+        let engine = crate::katago::Engine::spawn(config, CancellationToken::new()).await.expect("fake engine starts");
+        let mut sgf = String::from("(;GM[1]FF[4]SZ[19]KM[6.5]PB[Me]PW[AI (KataGo)]");
+        let pts = ["pd","dd","pq","dp","qk","nc","qf","pb","qc","kc","cf","fc","bd","cc","ci","qo","qp","po","np","qm","jj","jd","dj","jp","gg","mm","gm","mg","cq","qd"];
+        for (i, p) in pts.iter().enumerate() { sgf.push_str(&format!(";{}[{}]", if i % 2 == 0 { "B" } else { "W" }, p)); }
+        sgf.push(')');
+        let game = crate::sgf::parse_game(&sgf).unwrap();
+        let mut opts = AnalysisOptions { max_visits: Some(10), two_pass: true, deep_visits: Some(600), ..Default::default() };
+        opts.probes.enabled = false;
+        let a = analyze_game(&engine, game, opts, CancellationToken::new(), None, |_, _, _, _| {}).await.expect("analysis");
+        std::env::remove_var("GT_FAKE_CHURN");
+        assert!(!a.teaching.is_empty());
+        for t in &a.teaching {
+            let c = candidate_coverage(&a.turns, t.number, Some(600), true);
+            assert_eq!(c.status, "complete", "move {} not verified: {:?}", t.number, c);
+            assert!(a.turns[t.number - 1].search.as_ref().unwrap().qualifies(600));
+        }
+        assert_eq!(a.search_coverage.verified_candidates, a.teaching.len());
+        // A quick-pass position that was never deepened must not claim coverage.
+        let shallow = a.turns.iter().find(|t| !position_deep(t, 600)).expect("some positions stay shallow");
+        assert_eq!(position_coverage(shallow, Some(600), true).status, "pending");
+        assert!(a.visits_setting.contains("verification round"), "{}", a.visits_setting);
+        engine.shutdown();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     /// End-to-end through the real engine driver against `tests/fake_katago.sh`, which speaks the
     /// analysis protocol with canned numbers: two-pass, target profile, teaching selection, arc
