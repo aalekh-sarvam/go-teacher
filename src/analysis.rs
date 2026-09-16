@@ -173,6 +173,9 @@ pub struct MoveReview {
     /// Seconds the player spent on this move, when the record has clock data.
     #[serde(default)]
     pub time_spent: Option<f64>,
+    /// Opponent stones removed from the board by this move (from the board replay).
+    #[serde(default)]
+    pub stones_captured: usize,
     /// Raw-network policy probability of the played move and its 1-based rank over the whole board.
     #[serde(default)]
     pub policy_prob: Option<f32>,
@@ -462,7 +465,14 @@ fn policy_top(arr: &[f32], sx: usize, sy: usize) -> Option<(String, f32)> {
 
 fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) -> Vec<MoveReview> {
     let mut out = Vec::with_capacity(game.moves.len());
+    let boards = crate::teaching::boards(game);
     for (i, m) in game.moves.iter().enumerate() {
+        let stones_captured = {
+            let opp = m.color.opponent();
+            let before = boards[i].stones(opp).len();
+            let after = boards[i + 1].stones(opp).len();
+            before.saturating_sub(after)
+        };
         let before = &turns[i];
         let after = &turns[i + 1];
         let mv = move_string(game, m);
@@ -515,6 +525,7 @@ fn build_reviews(game: &GameRecord, turns: &[TurnEval], opts: &AnalysisOptions) 
             played_candidate,
             alternatives,
             time_spent,
+            stones_captured,
             policy_prob,
             policy_rank,
             human_prob,
@@ -621,11 +632,16 @@ pub async fn analyze_positions(engine: &Engine, game: &GameRecord, rules: &str, 
 
 /// Positions worth a deep second pass: the student's teaching candidates (before and after),
 /// large winrate swings in the undecided part of the game, the opponent's biggest mistakes, the end.
-fn deep_turns(reviews: &[MoveReview], teaching: &[crate::teaching::TeachingCandidate], student: Color, n: usize) -> Vec<usize> {
+fn deep_turns(reviews: &[MoveReview], teaching: &[crate::teaching::TeachingCandidate], praise: &[crate::teaching::PraiseCandidate], student: Color, n: usize) -> Vec<usize> {
     let mut set: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     for t in teaching {
         set.insert(t.number - 1);
         set.insert(t.number);
+    }
+    // Praise is judged on deep data too: a "clearly best" verdict from 150 visits is not reliable.
+    for p in praise {
+        set.insert(p.number - 1);
+        set.insert(p.number);
     }
     for r in reviews {
         let live = (0.05..=0.95).contains(&r.winrate_before);
@@ -687,11 +703,12 @@ pub async fn analyze_game(
     let mut reviews = build_reviews(&game, &turns, &opts);
     let (student, student_reason) = crate::teaching::detect_student(&game, opts.student);
     let mut teaching = crate::teaching::select(&game, &turns, &reviews, student, 8);
+    let prelim_praise = crate::teaching::praise(&reviews, &crate::teaching::status_changes(&game, &turns), student, 6);
 
     // Pass 2: re-analyse the key positions deeply and recompute everything from the merged turns.
     let mut deepened: Vec<usize> = Vec::new();
     if opts.two_pass {
-        let deep = deep_turns(&reviews, &teaching, student, n);
+        let deep = deep_turns(&reviews, &teaching, &prelim_praise, student, n);
         let deep_visits = Some(opts.deep_visits.unwrap_or(1000));
         let total2 = total1 + deep.len();
         let phase2 = format!("pass 2 of 2: deep re-analysis of {} key positions", deep.len());
@@ -737,8 +754,8 @@ pub async fn analyze_game(
         }
     }
 
-    let praise = crate::teaching::praise(&reviews, student, 3);
     let status_changes = crate::teaching::status_changes(&game, &turns);
+    let praise = crate::teaching::praise(&reviews, &status_changes, student, 5);
     let openings = crate::opening::corner_patterns(&game, &reviews);
     let phases = crate::teaching::phase_facts(&game, &turns, &reviews, &status_changes, student);
     let visits_setting = if opts.two_pass {
@@ -782,6 +799,18 @@ pub async fn analyze_game(
         probes: Default::default(),
     };
     analysis.probes = crate::probes::analyze(engine, &analysis, &cancel, done, &mut progress).await?;
+    // Praise ratings from the human-profile ladder: the weakest rank whose players choose the move first.
+    if let Some(ranks) = analysis.probes.rank_fit.get("move_ranks").and_then(|v| v.as_array()).cloned() {
+        for p in analysis.praise.iter_mut() {
+            if let Some(entry) = ranks.iter().find(|e| e.get("move_number").and_then(|n| n.as_u64()) == Some(p.number as u64)) {
+                p.rating = Some(match entry.get("weakest_profile_choosing_it_first").and_then(|v| v.as_str()) {
+                    Some(prof) => format!("a move most {} players find first", prof.strip_prefix("rank_").unwrap_or(prof)),
+                    None => "not the first choice of any tested human profile (20k–3d)".to_string(),
+                });
+                p.rating_source = Some("human-style network: weakest tested profile whose most common move is this move".to_string());
+            }
+        }
+    }
     analysis.elapsed_seconds = started.elapsed().as_secs_f64();
     Ok(analysis)
 }

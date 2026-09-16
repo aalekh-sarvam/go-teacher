@@ -82,7 +82,7 @@ impl Theme {
             Theme::Reading => "reading / tactics",
             Theme::LifeAndDeath => "life and death",
             Theme::Tenuki => "tenuki while threatened",
-            Theme::OverDefence => "over-defending / priority",
+            Theme::OverDefence => "priority (played locally, bigger move elsewhere)",
             Theme::Shape => "shape / connection",
             Theme::Endgame => "endgame counting",
             Theme::Direction => "direction of play",
@@ -137,15 +137,61 @@ pub struct PhaseFacts {
     pub student_top1_rate: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PraiseKind {
+    /// KataGo's first choice, and every other searched move was clearly worse.
+    OnlyMove,
+    /// Captured stones or killed a group without losing points.
+    Capture,
+    /// Turned the student's own group from dead or unsettled to alive.
+    Save,
+    /// Best move that players at the student's level rarely find.
+    NonObvious,
+    /// Best move in a position with real alternatives.
+    Steady,
+}
+
+impl PraiseKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            PraiseKind::OnlyMove => "only good move",
+            PraiseKind::Capture => "capture",
+            PraiseKind::Save => "saved a group",
+            PraiseKind::NonObvious => "non-obvious best move",
+            PraiseKind::Steady => "best move",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PraiseCandidate {
     pub number: usize,
     pub color: Color,
     pub mv: String,
+    /// The best other searched move.
     pub second: String,
-    /// How many points worse KataGo's second choice was.
+    /// How many points worse the best other searched move was (mover's view).
     pub gap: f64,
     pub winrate_before: f64,
+    #[serde(default = "default_kind")]
+    pub kind: PraiseKind,
+    #[serde(default)]
+    pub stones_captured: usize,
+    /// Human-policy probability of the move at the student's profile, when known.
+    #[serde(default)]
+    pub human_prob: Option<f32>,
+    /// "a move most 8k players find" etc., filled from the human-profile ladder; None if unknown.
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub rating_source: Option<String>,
+    /// One-line factual reason, safe to quote.
+    #[serde(default)]
+    pub note: String,
+}
+
+fn default_kind() -> PraiseKind {
+    PraiseKind::OnlyMove
 }
 
 fn looks_like_engine(name: &str) -> bool {
@@ -275,11 +321,12 @@ pub fn status_changes(game: &GameRecord, turns: &[TurnEval]) -> Vec<StatusChange
                 });
             }
         }
-        // Stones captured by this move: report as alive/unsettled -> captured when they were not already dead.
+        // Stones captured by this move. Groups the engine already counted as dead are still
+        // recorded (as "captured", from "dead") so the ledger of captures is complete.
         for (color, stones, _l) in boards[i].groups() {
             if stones.iter().all(|c| boards[i + 1].get(*c).is_none()) && color != m.color {
                 let ob = group_mean(before, &stones, sx);
-                if status_of(color, ob) != "dead" && (stones.len() >= 2 || status_of(color, ob) == "alive") {
+                if stones.len() >= 2 || status_of(color, ob) == "alive" {
                     let mut st = stones.clone();
                     st.sort_by_key(|c| (c.y, c.x));
                     out.push(StatusChange {
@@ -476,10 +523,13 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     let my_changes: Vec<StatusChange> = all_changes.iter().filter(|c| c.number == r.number).cloned().collect();
     let own_group_hurt = my_changes.iter().any(|c| c.group_color == r.color && (c.to == "dead" || c.to == "captured" || c.to == "unsettled"));
     let phase = phase_of(r.number, game.moves.len()).to_string();
-    let theme = if captured_at.is_some() || atari_after.iter().any(|a| a.starts_with(r.color.name())) {
-        Theme::Reading
-    } else if own_group_hurt {
+    let theme = if own_group_hurt {
         Theme::LifeAndDeath
+    } else if captured_at.is_some() || atari_after.iter().any(|a| a.starts_with(r.color.name())) {
+        Theme::Reading
+    } else if r.stones_captured > 0 || atari_after.iter().any(|a| a.starts_with(r.color.opponent().name())) {
+        // Attacked or captured while a bigger move was waiting: a priority problem, not defence.
+        Theme::OverDefence
     } else if best_answers_last && !played_answers_last {
         Theme::Tenuki
     } else if played_answers_last && !best_answers_last {
@@ -648,34 +698,79 @@ pub fn select(game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview], stu
     chosen.into_iter().map(|i| build(i, game, turns, reviews, &boards, &changes)).collect()
 }
 
-/// Moves where the student found KataGo's only good move in a live game.
-pub fn praise(reviews: &[MoveReview], student: Color, max: usize) -> Vec<PraiseCandidate> {
-    let mut out: Vec<PraiseCandidate> = reviews
-        .iter()
-        .filter(|r| r.color == student && r.rank == Some(0) && r.mv != "pass" && (0.05..=0.95).contains(&r.winrate_before))
-        .filter_map(|r| {
-            let first = r.alternatives.first()?;
-            let second = r.alternatives.get(1)?;
-            if second.visits < 5 {
-                return None;
-            }
-            let sign = if r.color == Color::Black { 1.0 } else { -1.0 };
-            let gap = sign * (first.score_lead - second.score_lead);
-            if gap >= 2.0 {
-                Some(PraiseCandidate {
-                    number: r.number,
-                    color: r.color,
-                    mv: r.mv.clone(),
-                    second: second.mv.clone(),
-                    gap,
-                    winrate_before: r.winrate_before,
-                })
-            } else {
-                None
-            }
+/// Moves worth praising. No winrate window: a decided game still has good moves. The gap is
+/// measured against the best *other* searched move by score, whatever its visit count (a move
+/// KataGo abandoned after one visit was judged worse, not left unjudged). Kinds, in priority
+/// order: capture / save, only good move, non-obvious best move, steady best move.
+pub fn praise(reviews: &[MoveReview], changes: &[StatusChange], student: Color, max: usize) -> Vec<PraiseCandidate> {
+    fn build(r: &MoveReview, changes: &[StatusChange], relaxed: bool) -> Option<PraiseCandidate> {
+        if r.color != student_of(r) || r.mv == "pass" {
+            return None;
+        }
+        let sign = if r.color == Color::Black { 1.0 } else { -1.0 };
+        let played_score = r.played_candidate.as_ref().map(|c| c.score_lead).unwrap_or(r.score_after);
+        let others: Vec<&crate::analysis::Candidate> = r.alternatives.iter().filter(|c| c.mv != r.mv).collect();
+        let best_other = others
+            .iter()
+            .max_by(|a, b| (sign * a.score_lead).partial_cmp(&(sign * b.score_lead)).unwrap())
+            .copied();
+        let gap = best_other.map(|c| sign * (played_score - c.score_lead)).unwrap_or(0.0);
+        let second = best_other.map(|c| c.mv.clone()).unwrap_or_default();
+        let is_best = r.rank == Some(0) || r.point_loss <= 0.5;
+        let killed = changes.iter().any(|c| c.number == r.number && c.group_color != r.color && (c.to == "dead" || c.to == "captured") && c.from != "dead");
+        let saved = changes.iter().any(|c| c.number == r.number && c.group_color == r.color && c.to == "alive" && c.from != "alive");
+        let human_low = r.human_prob.map_or(false, |p| p < 0.25);
+        let (kind, note) = if (r.stones_captured >= 3 || killed) && r.point_loss <= 1.0 {
+            (PraiseKind::Capture, if r.stones_captured > 0 { format!("captured {} stone{} without losing points", r.stones_captured, if r.stones_captured == 1 { "" } else { "s" }) } else { "killed a group without losing points".to_string() })
+        } else if saved && r.point_loss <= 1.0 {
+            (PraiseKind::Save, "brought the student's own group back to life".to_string())
+        } else if is_best && best_other.is_some() && gap >= if relaxed { 1.5 } else { 2.0 } {
+            (PraiseKind::OnlyMove, format!("KataGo's first choice; the best other searched move ({}) was {:.1} points worse", second, gap))
+        } else if is_best && human_low && (gap >= 1.0 || r.stones_captured > 0) {
+            (PraiseKind::NonObvious, format!("KataGo's first choice, yet players at the student's level choose it only {:.0}% of the time", r.human_prob.unwrap_or(0.0) * 100.0))
+        } else if r.rank == Some(0) && r.point_loss <= 0.3 && gap >= if relaxed { 0.5 } else { 1.0 } {
+            (PraiseKind::Steady, format!("KataGo's first choice, {:.1} points ahead of the next searched move", gap))
+        } else {
+            return None;
+        };
+        Some(PraiseCandidate {
+            number: r.number,
+            color: r.color,
+            mv: r.mv.clone(),
+            second,
+            gap,
+            winrate_before: r.winrate_before,
+            kind,
+            stones_captured: r.stones_captured,
+            human_prob: r.human_prob,
+            rating: None,
+            rating_source: None,
+            note,
         })
-        .collect();
-    out.sort_by(|a, b| b.gap.partial_cmp(&a.gap).unwrap());
+    }
+    fn student_of(r: &MoveReview) -> Color {
+        r.color
+    }
+    let score = |p: &PraiseCandidate| match p.kind {
+        PraiseKind::Capture => 100.0 + p.stones_captured as f64,
+        PraiseKind::Save => 80.0,
+        PraiseKind::OnlyMove => 50.0 + p.gap.min(30.0),
+        PraiseKind::NonObvious => 40.0 + (1.0 - p.human_prob.unwrap_or(0.5) as f64) * 20.0,
+        PraiseKind::Steady => p.gap.min(10.0),
+    };
+    let mine: Vec<&MoveReview> = reviews.iter().filter(|r| r.color == student).collect();
+    let mut out: Vec<PraiseCandidate> = mine.iter().filter_map(|r| build(r, changes, false)).collect();
+    if out.len() < 3 {
+        // Relax the gap thresholds so the student always gets a few things done well, when any exist.
+        for r in &mine {
+            if out.iter().all(|p| p.number != r.number) {
+                if let Some(p) = build(r, changes, true) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| score(b).partial_cmp(&score(a)).unwrap());
     out.truncate(max);
     out.sort_by_key(|p| p.number);
     out

@@ -129,3 +129,56 @@ function initLesson(idx, data, allMoves) {
     };
     lessonControllers.push({perspectiveChanged:()=>activate(panel)});activate('position');
 }
+
+// Context board: pinned beside the Game Overview and How the Game Unfolded
+// sections. Clicking a phase card or a cited move shows that position.
+function initContextBoard(allMoves, data) {
+    const canvas = document.getElementById('context-board');
+    const caption = document.getElementById('context-caption');
+    if (!canvas || !caption) return;
+    const size = data.board_size || 9;
+    const renderer = new Renderer(canvas, new GoBoard(size));
+    function show(n, label) {
+        if (!(n >= 1) || n > allMoves.length) return;
+        const b = new GoBoard(size);
+        replayMoves(b, allMoves, n);
+        const mv = allMoves[n-1] || {};
+        const markers = [];
+        if (mv.move && mv.move !== 'pass') {
+            const xy = gtpToXY(mv.move, size);
+            if (xy) markers.push({x: xy[0], y: xy[1], type: 'circle', color: '#b8862a'});
+        }
+        renderer.board = b; renderer.markers = markers; renderer.draw();
+        const who = mv.move && mv.move !== 'pass'
+            ? ' \u00b7 ' + (mv.color === 'W' ? 'White ' : 'Black ') + mv.move
+            : ' (pass)';
+        caption.textContent = 'Position after move ' + n + who + (label ? ' \u00b7 ' + label : '');
+        canvas.setAttribute('aria-label', 'Go board, position after move ' + n);
+    }
+    document.querySelectorAll('[data-anchor]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('[data-anchor]').forEach(other => {
+                other.removeAttribute('aria-current');
+                const otherCard = other.closest('.phase-card');
+                if (otherCard) otherCard.classList.remove('phase-active');
+            });
+            btn.setAttribute('aria-current', 'true');
+            const card = btn.closest('.phase-card');
+            if (card) card.classList.add('phase-active');
+            show(Number(btn.dataset.anchor), btn.dataset.phase);
+        });
+    });
+    document.querySelectorAll('.game-context .move-ref').forEach(btn => {
+        btn.addEventListener('click', () => {
+            show(Number(btn.dataset.move));
+            // On small screens the board sits above the text; bring it into
+            // view when a cited move was tapped while it was off-screen.
+            const rect = canvas.getBoundingClientRect();
+            if (rect.bottom < 0 || rect.top > window.innerHeight) {
+                const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+                canvas.scrollIntoView({behavior: reduce ? 'auto' : 'smooth', block: 'center'});
+            }
+        });
+    });
+    show(data.anchor || allMoves.length);
+}

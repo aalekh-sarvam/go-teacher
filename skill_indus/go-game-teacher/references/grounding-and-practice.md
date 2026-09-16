@@ -89,7 +89,10 @@ sequence is selected. Without it, the UI explicitly labels the shared engine/gen
 ## Research and transform a particular external example
 
 Research remains uncapped. Find an accessible **specific diagram/problem**, not just a course
-homepage or generic strategy article. Preserve `source.url` and `source.title`; add:
+homepage or generic strategy article. For classic tsumego, `references/tsumego-source-formats.md`
+gives exact, citable positions (`scripts/parse_tasuki_tex.py`) and verifies bounded objectives
+mechanically (`scripts/solve_tsumego.py`) — prefer them over transcribing image diagrams or
+hand-reading a solution. Preserve `source.url` and `source.title`; add:
 
 - `source.example_locator`: problem ID, figure number, section/diagram caption or video timestamp.
 - `source.position`: `{board_size, black_stones, white_stones, player_to_move}` for that example.

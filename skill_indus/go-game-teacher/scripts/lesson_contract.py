@@ -1,10 +1,30 @@
 """Join teacher prose to immutable report evidence. No model transcription of engine data."""
+import re
 from copy import deepcopy
 from go_rules import sequence_position
 from teaching_facts import build_facts, expand_facts
 
 PANELS = ('position', 'played', 'best', 'alternatives', 'local', 'what_if')
 FORBIDDEN = ('point_loss','played_move','preferred_move','player_color','refutation','better_line','alternatives','evidence','sequences','tree','ownership_plan','score_before','score_after','winrate_before','winrate_after')
+_RANGE_TAIL = re.compile(r'\d\s*[+\-\u2013]\s*$')
+
+def parse_move_range(text):
+    """(start, end) move numbers from a phase move_range string, or None.
+    Accepts '12-45', '45+', '34', en-dashes and stray words around the numbers.
+    An open-ended tail ('45+' / '50-') gives end=None: 'to the end of the game'."""
+    if text is None:
+        return None
+    s = str(text)
+    numbers = re.findall(r'\d+', s)
+    if not numbers:
+        return None
+    start = int(numbers[0])
+    end = int(numbers[1]) if len(numbers) > 1 else start
+    if end < start:
+        start, end = end, start
+    if _RANGE_TAIL.search(s):
+        end = None
+    return start, end
 
 def hydrate(parsed, authored):
     if authored.get('grounding_version') not in (None,1): raise ValueError('unsupported grounding_version')
@@ -51,7 +71,35 @@ def hydrate(parsed, authored):
             refutation_explanation=texts.get('played',lesson.get('refutation_explanation','')),
             alternatives=[dict(a,explanation=prose.get(a['move'],'')) for a in detail.get('candidates',[])])
         lesson['_difficulty'] = c.get('difficulty',{})
+    derive_context_anchors(result, parsed)
     return result
+
+def derive_context_anchors(result, parsed):
+    """Fill the anchor moves the context board jumps to. Authored anchor_move
+    wins; otherwise the end of the phase's move_range; the overview defaults
+    to the final position. Everything is clamped to the game so the board can
+    always render the position it points to."""
+    last = len(parsed.get('moves') or [])
+    def settle(anchor):
+        if anchor is None:
+            return None
+        if isinstance(anchor, bool) or not isinstance(anchor, int):
+            raise ValueError(f'anchor move must be an integer, not {anchor!r}')
+        return max(1, min(anchor, last)) if last else anchor
+    overview = result.get('overview_anchor_move')
+    result['overview_anchor_move'] = settle(overview if overview is not None else (last or None))
+    arc = result.get('game_arc')
+    if isinstance(arc, dict):
+        for ph in arc.get('phases') or []:
+            if not isinstance(ph, dict):
+                continue
+            anchor = ph.get('anchor_move')
+            if anchor is None:
+                span = parse_move_range(ph.get('move_range'))
+                if span is None:
+                    continue  # no resolvable range: the phase card renders without a jump
+                anchor = span[1] if span[1] is not None else last
+            ph['anchor_move'] = settle(anchor)
 
 
 def brief(parsed):

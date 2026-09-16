@@ -120,7 +120,7 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 - `game_title`, `players`, `result` — from the parsed JSON
 - `overall_feedback` — your stylistic assessment (2-3 paragraphs)
 - `progress` — optional top-level object: `summary` text and `rows` (`metric`, `this_game`, `recent_average`) copied from the parsed `history.metrics`. Rendered as a "Your Progress" card after the game arc. Omit when the report has no history section.
-- `game_arc` — required: the phase-by-phase narrative. An object with `intro` (1–2 sentences) and `phases`, one entry each for the phases the game actually had (typically Opening / Middle game / Endgame — a very short game may warrant only two, or even one). Each entry: `phase` (display name), `move_range` (e.g. "1–14"), `narrative` (2–4 sentences; blank-line-separated paragraphs allowed), and optional `turning_points` (array of short move-tagged notes). Rendered as a "How the Game Unfolded" section between the Game Overview and the lessons, with one card per phase and turning points as a bulleted list. The generator skips the section only when the field is missing (backwards compatibility with lesson JSON written before this field existed) — never rely on that. Follow the arc methodology and board-fact discipline in `references/game-arc-commentary.md`.
+- `game_arc` — required: the phase-by-phase narrative. An object with `intro` (1–2 sentences) and `phases`, one entry each for the phases the game actually had (typically Opening / Middle game / Endgame — a very short game may warrant only two, or even one). Each entry: `phase` (display name), `move_range` (e.g. "1–14"), `narrative` (2–4 sentences; blank-line-separated paragraphs allowed), optional `turning_points` (array of short move-tagged notes), and an optional integer `anchor_move` — the move whose position the phase card jumps the context board to (default: the end of the phase's move range; a phase whose range can't be parsed renders as a plain, non-clickable card). Rendered as a "How the Game Unfolded" section between the Game Overview and the lessons, with one card per phase and turning points as a bulleted list. The generator skips the section only when the field is missing (backwards compatibility with lesson JSON written before this field existed) — never rely on that. Follow the arc methodology and board-fact discipline in `references/game-arc-commentary.md`.
 - `lessons` — array of 2-3 lesson objects
 - `good_moves` — array of 1-3 moves the player played well (shown before puzzles)
 - `puzzles` — array of 2-4 puzzle objects (1-2 per lesson concept)
@@ -176,6 +176,10 @@ The HTML embeds a lightweight canvas-based Go board renderer in vanilla JavaScri
 - Explicit stone placement (for puzzle positions)
 - Visual markers: colored circles (red for played move, green for preferred move, quality colours for alternatives), labels
 - Click detection (for puzzle answering)
+
+### Context board
+
+The Game Overview and How the Game Unfolded sections sit in a two-column layout with a persistent board pinned beside the prose (it scrolls away before "Your Progress", where the lesson boards take over; on narrow screens it stacks above the text and stays pinned at reduced size). Clicking a phase card jumps the board to that phase's `anchor_move` and highlights the card; clicking a move reference in the prose (a dotted-underlined "move N" or a coordinate that was played exactly once in the game) shows the position after that move with the move circled and a caption naming it. The overview defaults to the final position (`overview_anchor_move` overrides it).
 
 ### Lesson interaction
 

@@ -48,6 +48,15 @@ def validate(parsed, authored):
     gi=parsed['game_info'];moves=parsed['moves'];student=gi.get('student','B')
     if not lesson.get('game_arc',{}).get('phases'): errors.append('game_arc must contain phases')
     if not lesson.get('lessons'): errors.append('at least one teaching lesson is required')
+    # Context-board anchors: derived/clamped by the contract layer; authored
+    # values outside the game still get a warning so the author can fix them.
+    for i, ph in enumerate((authored.get('game_arc') or {}).get('phases') or []):
+        a = ph.get('anchor_move') if isinstance(ph, dict) else None
+        if isinstance(a, int) and not isinstance(a, bool) and not 1 <= a <= len(moves):
+            warnings.append(f'game_arc phase {i+1}: anchor_move {a} is outside the game and will be clamped')
+    a = authored.get('overview_anchor_move')
+    if isinstance(a, int) and not isinstance(a, bool) and not 1 <= a <= len(moves):
+        warnings.append(f'overview_anchor_move {a} is outside the game and will be clamped')
     game_shapes=set()
     try:
         p=Position.from_parsed(parsed,0)

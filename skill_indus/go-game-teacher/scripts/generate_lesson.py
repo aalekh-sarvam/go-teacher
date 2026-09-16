@@ -4,6 +4,7 @@
 from pathlib import Path
 from lesson_contract import hydrate
 import json
+import re
 import sys
 
 
@@ -434,9 +435,22 @@ footer { text-align: center; padding: 20px; color: #999; font-size: 0.85em; }
 .progress-table th { background: #f5edd5; }
 .lesson-story .story-label { font-weight: 700; color: #3a4a5a; display: block; margin-bottom: 4px; font-size: 0.85em; text-transform: uppercase; letter-spacing: 0.03em; }
 .overview-text p { margin-bottom: 12px; }
+.context-layout { display: grid; grid-template-columns: minmax(0, 1fr) 392px; gap: 24px; align-items: start; }
+.context-board-col { position: sticky; top: 16px; background: #fff; border-radius: 10px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); }
+.context-board-col canvas { border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); max-width: 100%; height: auto; display: block; }
+.context-caption { text-align: center; margin-top: 10px; color: #617062; font-size: 13px; min-height: 20px; }
+.move-ref { background: none; border: none; padding: 0; margin: 0; color: inherit; font: inherit; cursor: pointer; text-decoration: underline dotted #8a6a2a; text-underline-offset: 3px; }
+.move-ref:hover { color: #3a2a10; text-decoration-style: solid; }
+button.phase-header { background: none; border: none; padding: 0; width: 100%; font: inherit; color: inherit; cursor: pointer; }
+button.phase-header:hover .phase-name { color: #8a6a2a; text-decoration: underline; }
+button.phase-header[aria-current="true"] .phase-name { color: #2a5a2a; text-decoration: underline; }
+.phase-hint { color: #8a6a2a; font-size: 0.75em; letter-spacing: 0.03em; text-transform: uppercase; }
+.phase-card.phase-active { border-left-color: #2a5a2a; background: #f2f7f0; }
 @media (max-width: 700px) {
     .lesson-content, .puzzle-content { flex-direction: column; }
     .board-container canvas { width: 100%; }
+    .context-layout { grid-template-columns: 1fr; }
+    .context-board-col { order: -1; position: sticky; top: 8px; z-index: 5; max-width: 320px; margin: 0 auto; }
 }
 '''
 
@@ -461,41 +475,98 @@ def escape_html(text):
     return text
 
 
-def format_paragraphs(text):
-    """Convert plain text paragraphs to HTML."""
+def format_paragraphs(text, linkify=None):
+    """Convert plain text paragraphs to HTML, optionally making move references clickable."""
     paragraphs = text.strip().split('\n\n')
     html_parts = []
     for p in paragraphs:
         p = p.strip()
         if p:
             escaped = escape_html(p)
+            if linkify:
+                escaped = linkify(escaped)
             # Convert single newlines to <br>
             escaped = escaped.replace('\n', '<br>')
             html_parts.append(f'<p>{escaped}</p>')
     return '\n'.join(html_parts)
 
+# Context-prose move references. 'move N' links when N exists in the game;
+# a coordinate links only when that exact point was played exactly once
+# (a twice-played point has no single jump target). Guards keep 'Q16.5',
+# 'move 34-40' and 'zzD4' plain. Runs strictly AFTER HTML escaping so the
+# injected markup cannot corrupt authored text.
+MOVE_REF_RE = re.compile(r'\b(?P<text>[Mm]ove\s+(?P<n>\d{1,3}))(?!\d)(?!\.\d)(?!\s*[-\u2013]\s*\d)')
+COORD_REF_RE = re.compile(r'(?<![A-Za-z0-9_-])(?P<text>[A-HJ-T](?:1[0-9]|20|[1-9]))(?![0-9])(?!\.\d)(?![A-Za-z0-9_-])')
 
-def build_arc_section(game_arc):
+def build_move_index(moves):
+    """GTP point -> move number, only for points played exactly once."""
+    counts = {}
+    for m in moves:
+        mv = m.get('move')
+        if mv and mv != 'pass':
+            counts[mv] = counts.get(mv, 0) + 1
+    index = {}
+    for i, m in enumerate(moves):
+        mv = m.get('move')
+        if mv and mv != 'pass' and counts.get(mv) == 1:
+            index[mv] = i + 1
+    return index
+
+def linkify_moves(escaped, move_count, unique_points):
+    """Wrap 'move N' and uniquely-played coordinates in board-jump buttons."""
+    def move_sub(m):
+        n = int(m.group('n'))
+        if not 1 <= n <= move_count:
+            return m.group(0)
+        return '<button type="button" class="move-ref" data-move="%d">%s</button>' % (n, m.group('text'))
+    def coord_sub(m):
+        n = unique_points.get(m.group('text'))
+        if n is None:
+            return m.group(0)
+        return '<button type="button" class="move-ref" data-move="%d">%s</button>' % (n, m.group('text'))
+    return COORD_REF_RE.sub(coord_sub, MOVE_REF_RE.sub(move_sub, escaped))
+
+
+def build_arc_section(game_arc, linkify=None):
     """Build the 'How the Game Unfolded' section HTML, or '' if no arc data."""
     if not game_arc or not game_arc.get('phases'):
         return ''
     intro_html = ''
     if game_arc.get('intro'):
-        intro_html = f'<p class="arc-intro">{escape_html(game_arc["intro"])}</p>'
+        intro = escape_html(game_arc["intro"])
+        if linkify:
+            intro = linkify(intro)
+        intro_html = f'<p class="arc-intro">{intro}</p>'
     cards = ''
     for ph in game_arc.get('phases', []):
         name = escape_html(str(ph.get('phase', '')))
         rng = escape_html(str(ph.get('move_range', ''))) if ph.get('move_range') else ''
-        header = f'<div class="phase-header"><span class="phase-name">{name}</span>'
+        anchor = ph.get('anchor_move')
+        # The phase header is a button when the contract layer gave it an
+        # anchor; otherwise it stays a plain heading (no jump target).
+        if anchor:
+            header = (f'<button type="button" class="phase-header phase-jump" data-anchor="{anchor}" '
+                      f'data-phase="{name}" aria-label="Show the board position for the {name} phase">'
+                      f'<span class="phase-name">{name}</span>')
+        else:
+            header = f'<div class="phase-header"><span class="phase-name">{name}</span>'
         if rng:
             header += f'<span class="phase-range">moves {rng}</span>'
-        header += '</div>'
-        body = format_paragraphs(ph.get('narrative', ''))
+        if anchor:
+            header += '<span class="phase-hint">show position</span></button>'
+        else:
+            header += '</div>'
+        body = format_paragraphs(ph.get('narrative', ''), linkify)
         tp_html = ''
         turning = ph.get('turning_points') or []
         if turning:
-            items = ''.join(f'<li>{escape_html(str(t))}</li>' for t in turning)
-            tp_html = f'<ul class="turning-points">{items}</ul>'
+            items = []
+            for t in turning:
+                item = escape_html(str(t))
+                if linkify:
+                    item = linkify(item)
+                items.append(f'<li>{item}</li>')
+            tp_html = f'<ul class="turning-points">{"".join(items)}</ul>'
         cards += f'<div class="phase-card">{header}{body}{tp_html}</div>'
     return ('<section class="arc-section">'
             '<h2>How the Game Unfolded</h2>'
@@ -778,12 +849,37 @@ def generate_html(parsed_data, lesson_data):
     good_moves_js = good_moves_js.replace("<", "\\u003c")
     moves_js = moves_js.replace("<", "\\u003c")
 
-    # Overall feedback
-    overview_html = format_paragraphs(lesson_data.get('overall_feedback', ''))
+    # Overall feedback + arc prose may cite moves; those citations become
+    # board jumps on the context board (only moves that exist in the record).
+    unique_points = build_move_index(moves)
+    linkify = lambda s: linkify_moves(s, len(moves), unique_points)
+    overview_html = format_paragraphs(lesson_data.get('overall_feedback', ''), linkify)
 
     # Game arc (phase-by-phase narrative) — skipped if absent
-    arc_section = build_arc_section(lesson_data.get('game_arc'))
+    arc_section = build_arc_section(lesson_data.get('game_arc'), linkify)
     progress_section = build_progress_section(lesson_data.get('progress'))
+
+    # Context board: pinned beside the overview and arc while those sections
+    # scroll, naturally scrolling away before 'Your Progress' and the lessons.
+    context_anchor = lesson_data.get('overview_anchor_move') if moves else None
+    overview_section = (f'<section class="overview"><h2>Game Overview</h2>'
+                        f'<div class="overview-text">{overview_html}</div></section>')
+    if context_anchor and (overview_html or arc_section):
+        context_top = ('<div class="context-layout">'
+                       f'<div class="context-text">{overview_section}{arc_section}</div>'
+                       '<div class="context-board-col">'
+                       '<canvas id="context-board" width="360" height="360" role="img" aria-label="Go board"></canvas>'
+                       '<p class="context-caption" id="context-caption" aria-live="polite"></p>'
+                       '</div></div>')
+        context_js = json.dumps({
+            'board_size': gi.get('board_size', 9),
+            'anchor': context_anchor,
+            'phases': [{'name': str(ph.get('phase', '')), 'anchor': ph.get('anchor_move')}
+                       for ph in (lesson_data.get('game_arc') or {}).get('phases', [])],
+        }).replace('<', '\\u003c')
+    else:
+        context_top = f'{overview_section}\n{arc_section}'
+        context_js = 'null'
 
     # Game title
     title = escape_html(lesson_data.get('game_title', 'Go Game Review'))
@@ -829,16 +925,9 @@ button:focus-visible,select:focus-visible {{ outline:3px solid #ba8c36;outline-o
   </div>
 </header>
 
-<details class="game-context">
+<details class="game-context" open>
 <summary style="cursor:pointer;padding:18px;font-weight:700">Game overview, development and progress</summary>
-<section class="overview">
-  <h2>Game Overview</h2>
-  <div class="overview-text">
-    {overview_html}
-  </div>
-</section>
-
-{arc_section}
+{context_top}
 
 {progress_section}
 </details>
@@ -872,6 +961,7 @@ const allMoves = {moves_js};
 const lessonData = {lessons_js};
 const puzzleData = {puzzles_js};
 const goodMoveData = {good_moves_js};
+const contextData = {context_js};
 
 window.onload = function() {{
   for (let i = 0; i < lessonData.length; i++) {{
@@ -883,6 +973,7 @@ window.onload = function() {{
   for (let i = 0; i < puzzleData.length; i++) {{
     initPuzzle(i, puzzleData[i]);
   }}
+  if (contextData) initContextBoard(allMoves, contextData);
 }};
 </script>
 </body>

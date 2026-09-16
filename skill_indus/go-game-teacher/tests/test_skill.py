@@ -8,10 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from parse_review import parse_review
-from lesson_contract import hydrate, brief
+from lesson_contract import hydrate, brief, parse_move_range
 from validate_lesson import validate, canonical
 from go_rules import Position, sequence_position
-from generate_lesson import generate_html
+from generate_lesson import generate_html, build_move_index, linkify_moves
 
 class SkillTests(unittest.TestCase):
     @classmethod
@@ -26,6 +26,69 @@ class SkillTests(unittest.TestCase):
         self.assertIn('sampled human policy',html)
         self.assertIn('setPerspective',html)
         self.assertNotIn('btn-pref-',html)
+
+    def test_context_board_rendered_with_phase_jumps(self):
+        html=generate_html(self.parsed,self.lesson)
+        self.assertIn('id="context-board"',html)
+        self.assertIn('context-layout',html)
+        self.assertIn('position:sticky',html.replace(' ',''))
+        self.assertIn('initContextBoard',html)
+        self.assertIn('data-anchor=',html)
+        self.assertIn('const contextData = {',html)
+
+    def test_context_anchors_derived_and_clamped(self):
+        lesson=json.loads((ROOT/'tests/sample_lesson_v5.json').read_text())
+        last=len(self.parsed['moves'])
+        hydrated=hydrate(self.parsed,lesson)
+        rng=parse_move_range(hydrated['game_arc']['phases'][0]['move_range'])
+        self.assertEqual(hydrated['game_arc']['phases'][0]['anchor_move'],min(rng[1],last))
+        self.assertEqual(hydrated['overview_anchor_move'],last)
+        lesson['game_arc']['phases'][0]['anchor_move']=999
+        lesson['overview_anchor_move']=3
+        hydrated=hydrate(self.parsed,lesson)
+        self.assertEqual(hydrated['game_arc']['phases'][0]['anchor_move'],last)
+        self.assertEqual(hydrated['overview_anchor_move'],3)
+        errors,warnings=validate(self.parsed,lesson)
+        self.assertEqual(errors,[])
+        self.assertTrue(any('anchor_move 999' in w for w in warnings))
+        lesson['game_arc']['phases'][0]['anchor_move']='midway'
+        self.assertTrue(validate(self.parsed,lesson)[0])
+
+    def test_parse_move_range(self):
+        self.assertEqual(parse_move_range('12-45'),(12,45))
+        self.assertEqual(parse_move_range('1\u201320'),(1,20))
+        self.assertEqual(parse_move_range('34'),(34,34))
+        self.assertEqual(parse_move_range('45+'),(45,None))
+        self.assertEqual(parse_move_range('50-'),(50,None))
+        self.assertEqual(parse_move_range('moves 12-45'),(12,45))
+        self.assertEqual(parse_move_range('45-12'),(12,45))
+        self.assertIsNone(parse_move_range('opening'))
+        self.assertIsNone(parse_move_range(None))
+
+    def test_linkify_only_real_moves(self):
+        moves=[{'number':1,'move':'D4','color':'B'},{'number':2,'move':'Q16','color':'W'},
+               {'number':3,'move':'D4','color':'B'},{'number':4,'move':'pass','color':'W'}]
+        index=build_move_index(moves)
+        self.assertEqual(index,{'Q16':2})  # D4 played twice has no single target
+        text='Move 2 at Q16 set the tone, but move 3 was a pass. Q16.5, move 99, moves 1-4, I5, zzD4 and E5 stay plain.'
+        out=linkify_moves(text,4,index)
+        self.assertEqual(out.count('<button'),3)  # Move 2, Q16, move 3 (a pass still jumps)
+        self.assertIn('data-move="2">Move 2<',out)
+        self.assertIn('data-move="2">Q16<',out)
+        self.assertIn('data-move="3">move 3<',out)
+        self.assertNotIn('data-move="99"',out)
+        self.assertNotIn('I5<',out)
+        self.assertNotIn('E5<',out)
+        esc='Black played & then <strong>Q16</strong> worked. Move 2 mattered.'
+        out2=linkify_moves(esc,4,index)
+        self.assertEqual(out2.count('<button'),2)
+        self.assertIn('&',out2);self.assertIn('<strong>',out2)
+
+    def test_lesson_and_puzzle_prose_not_linkified(self):
+        lesson=copy.deepcopy(self.lesson)
+        lesson['lessons'][0]['panels']['played']='The move 7 here should stay plain text.'
+        html=generate_html(self.parsed,lesson)
+        self.assertIn('The move 7 here should stay plain text',html)  # unmodified: no button injected
 
     def test_old_format_still_parses(self):
         parsed=parse_review((ROOT/'tests/sample_report_format4.md').read_text())

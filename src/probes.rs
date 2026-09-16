@@ -133,10 +133,25 @@ pub fn difficulty(t: &TurnEval) -> Value {
     let gap = cs
         .get(1)
         .map(|c| round(sign(t.to_move) * (best.score_lead - c.score_lead)));
+    // One clear move: the top candidate took almost every visit and the next searched move is
+    // clearly worse. Under-searched: the whole position had few visits. These are different things.
+    let top_share = if t.visits > 0 { best.visits as f64 / t.visits as f64 } else { 0.0 };
+    let label = if t.visits < 100 {
+        "under-searched"
+    } else if top_share >= 0.9 && gap.map_or(true, |g| g >= 2.0) {
+        "one clear move"
+    } else if cs.len() < 2 {
+        "one clear move"
+    } else if good == 1 {
+        "narrow choice in searched moves"
+    } else {
+        "several searched choices"
+    };
     json!({"turn":t.turn,"near_best_searched":good,"candidates_tested":cs.len(),"gap_points_for_mover":gap,
+        "top_visit_share":round(top_share),
         "policy_entropy_nats":entropy(&t.policy),"human_entropy_nats":entropy(&t.human_policy),
-        "label":if cs.len()<2 {"insufficient search"} else if good==1 {"narrow choice in searched moves"} else {"several searched choices"},
-        "visits":t.visits,"limited_search":t.visits<400,"caveat":"Search coverage and policy entropy are difficulty signals, not a human difficulty measurement."})
+        "label":label,
+        "visits":t.visits,"limited_search":t.visits<100,"caveat":"Search coverage and policy entropy are difficulty signals, not a human difficulty measurement."})
 }
 
 struct Runner<'a, F> {
@@ -643,33 +658,19 @@ async fn rank_fit<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         return Ok(json!({"status":"unavailable","reason":"human model not loaded"}));
     }
     let student = run.a.student.unwrap_or(Color::Black);
-    let mut selected = Vec::new();
-    for phase in ["opening", "middlegame", "endgame"] {
-        let items: Vec<_> = run
-            .a
-            .reviews
-            .iter()
-            .filter(|r| {
-                r.color == student
-                    && r.mv != "pass"
-                    && crate::teaching::phase_of(r.number, run.a.reviews.len()) == phase
-            })
-            .collect();
-        let stride = items.len().div_ceil(16).max(1);
-        selected.extend(
-            items
-                .into_iter()
-                .step_by(stride)
-                .take(16)
-                .map(|r| r.number - 1),
-        );
-    }
+    // Every non-pass student move, stride-sampled only when the game is long (cap 60 positions):
+    // one network evaluation per position per profile, no search, so this stays cheap.
+    let all: Vec<usize> = run.a.reviews.iter().filter(|r| r.color == student && r.mv != "pass").map(|r| r.number - 1).collect();
+    let stride = all.len().div_ceil(60).max(1);
+    let selected: Vec<usize> = all.into_iter().step_by(stride).collect();
     if selected.len() < 8 {
         return Ok(
             json!({"status":"unavailable","reason":"fewer than eight non-pass student moves","sample_count":selected.len()}),
         );
     }
     let mut probabilities: BTreeMap<String, Vec<(usize, f64)>> = BTreeMap::new();
+    // move index -> list of (profile, prob of played move, played move is that profile's top move)
+    let mut per_move: BTreeMap<usize, Vec<(String, f64, bool)>> = BTreeMap::new();
     for profile in profiles {
         let mut opts: AnalysisOptions = run.a.options.clone();
         opts.human_profile = Some(profile.clone());
@@ -706,18 +707,48 @@ async fn rank_fit<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         *run.timing.entry("rank policy fit".into()).or_default() += start.elapsed().as_secs_f64();
         for t in turns {
             let r = &run.a.reviews[t.turn];
-            if let Some(p) = t.human_policy.as_ref().and_then(|p| {
-                index(&r.mv, run.a.game.size_x, run.a.game.size_y).and_then(|i| p.get(i))
-            }) {
-                if *p >= 0.0 {
-                    probabilities
-                        .entry(profile.clone())
-                        .or_default()
-                        .push((t.turn, (*p as f64).max(1e-6)));
+            let idx = index(&r.mv, run.a.game.size_x, run.a.game.size_y);
+            if let (Some(pol), Some(i)) = (t.human_policy.as_ref(), idx) {
+                if let Some(p) = pol.get(i) {
+                    if *p >= 0.0 {
+                        probabilities.entry(profile.clone()).or_default().push((t.turn, (*p as f64).max(1e-6)));
+                        let top = pol.iter().cloned().fold(f32::MIN, f32::max);
+                        per_move.entry(t.turn).or_default().push((profile.clone(), *p as f64, (*p - top).abs() < 1e-9));
+                    }
                 }
             }
         }
     }
+    // Likelihood-weighted rank estimate over the tested ladder, tempered so ~8 moves carry one unit
+    // of evidence; the band is one weighted standard deviation. Descriptive similarity, not a rating.
+    let estimate_for = |vs: &dyn Fn(&str) -> Option<(f64, usize)>| -> Option<Value> {
+        let mut pts: Vec<(f64, f64, usize)> = Vec::new(); // (rank value, total log-lik, n)
+        for p in profiles {
+            if let (Some(v), Some((ll, n))) = (rank_value(p), vs(p)) {
+                pts.push((v, ll, n));
+            }
+        }
+        if pts.len() < 3 {
+            return None;
+        }
+        let n = pts[0].2;
+        if n < 8 {
+            return None;
+        }
+        let temp = (n as f64 / 8.0).max(1.0);
+        let max_ll = pts.iter().map(|x| x.1).fold(f64::MIN, f64::max);
+        let weights: Vec<f64> = pts.iter().map(|x| ((x.1 - max_ll) / temp).exp()).collect();
+        let wsum: f64 = weights.iter().sum();
+        let mean = pts.iter().zip(&weights).map(|(x, w)| x.0 * w).sum::<f64>() / wsum;
+        let var = pts.iter().zip(&weights).map(|(x, w)| w * (x.0 - mean).powi(2)).sum::<f64>() / wsum;
+        let sd = var.sqrt().max(1.0);
+        Some(json!({
+            "rank_value": round(mean), "rank_label": rank_label(mean),
+            "low_label": rank_label(mean - sd), "high_label": rank_label(mean + sd),
+            "band_stones": round(sd), "samples": n,
+            "wording": format!("plays like a {} in this game (range {}–{}, {} moves)", rank_label(mean), rank_label(mean - sd), rank_label(mean + sd), n),
+        }))
+    };
     let mut fits = Vec::new();
     for phase in ["whole game", "opening", "middlegame", "endgame"] {
         let mut scores = Vec::new();
@@ -748,12 +779,61 @@ async fn rank_fit<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         } else {
             None
         };
-        fits.push(json!({"phase":phase,"closest_tested_profile":winner,"too_few_moves":n<8,"scores":scores}));
+        let estimate = estimate_for(&|profile: &str| {
+            probabilities.get(profile).map(|values| {
+                let vs: Vec<f64> = values
+                    .iter()
+                    .filter(|(i, _)| phase == "whole game" || crate::teaching::phase_of(i + 1, run.a.reviews.len()) == phase)
+                    .map(|(_, p)| p.ln())
+                    .collect();
+                (vs.iter().sum::<f64>(), vs.len())
+            })
+        });
+        fits.push(json!({"phase":phase,"closest_tested_profile":winner,"too_few_moves":n<8,"estimate":estimate,"scores":scores}));
     }
+    // Per-move "finding rank": the weakest tested profile whose most common move is the played move.
+    let mut ladder: Vec<&String> = profiles.iter().filter(|p| rank_value(p).is_some()).collect();
+    ladder.sort_by(|a, b| rank_value(a).unwrap().partial_cmp(&rank_value(b).unwrap()).unwrap());
+    let move_ranks: Vec<Value> = per_move
+        .iter()
+        .map(|(turn, entries)| {
+            let finding = ladder.iter().find(|p| entries.iter().any(|(q, _, top)| q == **p && *top)).map(|p| p.to_string());
+            let probs: serde_json::Map<String, Value> = entries.iter().map(|(p, prob, _)| (p.clone(), json!(round(*prob)))).collect();
+            json!({"move_number": turn + 1, "move": run.a.reviews[*turn].mv, "weakest_profile_choosing_it_first": finding, "played_probability_by_profile": probs})
+        })
+        .collect();
+    let overall = fits.first().and_then(|f| f.get("estimate").cloned()).unwrap_or(Value::Null);
     Ok(
         json!({"status":"computed","student":student,"profiles_tested":profiles,"phases":fits,"sample_turns":selected,
-        "caveat":"Descriptive fit to a finite profile set in one game, not a rank estimate, posterior or confidence interval. Small boards, handicap, opening familiarity and saturated positions affect calibration."}),
+        "estimate":overall,"move_ranks":move_ranks,
+        "caveat":"Similarity of the student's moves to human play at the tested ranks in this one game, not a rating. Small boards, handicap, opening familiarity and saturated positions affect it."}),
     )
+}
+
+/// Numeric rank scale: 20k = -20 … 1k = -1, 1d = 0, 2d = 1 … (dan ranks adjacent to 1k).
+pub fn rank_value(profile: &str) -> Option<f64> {
+    let r = profile.strip_prefix("rank_")?;
+    let (num, suffix) = r.split_at(r.len().checked_sub(1)?);
+    let n: f64 = num.parse().ok()?;
+    match suffix {
+        "k" => Some(-n),
+        "d" => Some(n - 1.0),
+        _ => None,
+    }
+}
+
+pub fn rank_label(v: f64) -> String {
+    let r = v.round() as i64;
+    if r <= -1 {
+        format!("{}k", -r)
+    } else {
+        format!("{}d", (r + 1).min(9))
+    }
+}
+
+/// Nearest profile in the standard set for a rank value.
+pub fn profile_for_value(v: f64) -> String {
+    format!("rank_{}", rank_label(v.clamp(-20.0, 8.0)))
 }
 
 pub async fn analyze<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
@@ -1184,14 +1264,10 @@ pub async fn analyze<F: FnMut(usize, usize, Option<&TurnEval>, &str)>(
         }
     }
     run.done += 1;
-    let mut profiles = vec![
-        "rank_20k".into(),
-        "rank_15k".into(),
-        "rank_10k".into(),
-        "rank_5k".into(),
-        "rank_1k".into(),
-        "rank_3d".into(),
-    ];
+    let mut profiles: Vec<String> = ["rank_20k", "rank_15k", "rank_12k", "rank_10k", "rank_8k", "rank_6k", "rank_5k", "rank_3k", "rank_1k", "rank_1d", "rank_3d"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     for p in [human, target].into_iter().flatten() {
         if !profiles.contains(&p) {
             profiles.push(p);
