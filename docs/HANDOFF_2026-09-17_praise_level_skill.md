@@ -1,5 +1,10 @@
 # Handoff: finish the praise / level-tailoring / parallel-skill work
 
+**Status 2026-09-17 (later):** all items in this file, the 14 suggestions and the coverage handoff
+(`docs/TEACHING_SEARCH_COVERAGE_HANDOFF.md`, sections 1–15) are implemented; see
+`docs/VALIDATION_2026-09-17.md` for the verification run and the acceptance checklist. The text
+below is kept as the record of what was planned.
+
 Written 2026-09-17 for an agent taking over. Read this file, then `docs/PLAN_2026-09-17_level_praise_parallel.md`
 (the plan the user approved; its two lists are reproduced at the end of this file), then the code
 pointers below. Everything else in `docs/` is background; do not use `docs/TEACHING_SEARCH_COVERAGE_HANDOFF.md`

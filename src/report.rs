@@ -385,7 +385,9 @@ Recorded result: {}.\n",
         let crossed = (r.winrate_before - 0.5) * (r.winrate_after - 0.5) < 0.0 && (r.winrate_before - r.winrate_after).abs() >= 0.05;
         let swing = (r.winrate_before - r.winrate_after).abs() >= 0.15;
         // A swing measured on the shallow pass is noise unless the move also cost real points.
-        let reliable = a.deepened.is_empty() || (a.deepened.contains(&(r.number - 1)) && a.deepened.contains(&r.number)) || r.point_loss.abs() >= 3.0;
+        // Winrate swings on a near-even board are search noise unless real points moved too.
+        let deep_both = a.deepened.contains(&(r.number - 1)) && a.deepened.contains(&r.number);
+        let reliable = r.point_loss.abs() >= 3.0 || (deep_both && r.point_loss.abs() >= 1.5);
         if (crossed || swing) && reliable {
             any = true;
             let _ = writeln!(
