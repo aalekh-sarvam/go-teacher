@@ -36,6 +36,10 @@ pub fn build(a: &GameAnalysis) -> Value {
             // Scores stay Black-view even on White's moves. Loss belongs to the mover.
             let mut m = json!({"number":r.number,"color":r.color.letter(),"move":r.mv,
                 "point_loss":r.point_loss,"score_black":r.score_after,"stones_captured":r.stones_captured});
+            let tried = &g.moves[r.number - 1].also_considered;
+            if !tried.is_empty() {
+                m["also_considered"] = json!(tried);
+            }
             if let Some(seconds) = valid_time(r) {
                 m["time_spent_seconds"] = json!(seconds);
             }
@@ -151,6 +155,21 @@ pub fn build(a: &GameAnalysis) -> Value {
         .unwrap_or_default();
     let current_rank = estimate.get("rank_value").and_then(|v| v.as_f64());
     let working = crate::progress::working_rank(&a.history, current_rank);
+    // Decided-game framing: from which move the winrate stayed outside 5–95% to the end.
+    let decided_from = {
+        let mut from: Option<usize> = None;
+        for t in a.turns.iter() {
+            let live = (0.05..=0.95).contains(&t.winrate);
+            if live { from = None; } else if from.is_none() { from = Some(t.turn); }
+        }
+        from
+    };
+    let game_framing = json!({
+        "decided_from_position": decided_from,
+        "decided_for_moves": decided_from.map(|f| a.turns.len().saturating_sub(1).saturating_sub(f)),
+        "final_margin_black": a.turns.last().map(|t| t.score_lead),
+        "note": match decided_from { Some(f) if a.turns.len() > f + 20 => format!("KataGo rated the game as decided from position {} to the end; later losses changed the margin, not the result. Judge them by points, and choose lessons from the moves that decided the game.", f), _ => "The game stayed contestable for most of its length; winrate swings are meaningful.".to_string() },
+    });
     let student_profile = json!({
         "estimate": estimate,
         "phases": phase_estimates,
@@ -188,6 +207,7 @@ pub fn build(a: &GameAnalysis) -> Value {
         "teaching":{"student":student.letter(),"candidates":candidates,"praise":praise},
         "student_profile":student_profile,
         "search_coverage":a.search_coverage,
+        "game_framing":game_framing,
         "summary":{"accuracy":accuracy,"turning_points":turning,"timing":timing(a)},"arc":{"phases":a.phases,"status_changes":a.status_changes},"openings":a.openings,"history":a.history,
         "endgame_values":a.probes.endgame_values,"missed_opportunities":a.probes.missed_opportunities,"rank_fit":a.probes.rank_fit,"profiles":a.probes.profiles,
         "provenance":{"engine":a.engine_version,"started_at":a.started_at,"elapsed_seconds":a.elapsed_seconds,"probe_queries":a.probes.queries,"probe_seconds":a.probes.elapsed_seconds,"warnings":a.engine_warnings.iter().chain(a.probes.warnings.iter()).collect::<Vec<_>>(),"sgf_warnings":g.warnings},
@@ -195,6 +215,8 @@ pub fn build(a: &GameAnalysis) -> Value {
             "student_profile":"estimate.wording is the sentence to use; working_rank smooths the last five games; profiles_used are the human profiles the probes ran with",
             "praise":"kind_label says why the move is praised (capture, saved a group, only good move, non-obvious best move, best move); rating comes from the human-profile ladder and must be quoted with rating_source",
             "colours":"every *_with_colours list writes each move as 'B D7' / 'W E3'; copy those tokens when narrating, never bare coordinates",
+            "also_considered":"moves[].also_considered lists moves the student tried and took back at that point (SGF undo branches); it shows what they were thinking, not what happened",
+            "game_framing":"decided_from_position is the first position after which Black's winrate stayed outside 5–95% to the end; when set, frame later losses by points against the margin",
             "coverage":"evaluation_coverage says whether both positions around a candidate had a completed deep search (complete/incomplete/disabled/unknown) with actual and requested visits; investigation_coverage says whether the optional teaching investigations ran (available/partial/not_selected/disabled/unavailable). Lack of investigations never means lack of deep evaluation.",
             "moves":"score_black is the numeric Black lead AFTER this move; positive favours Black, negative White. Before move 1 use initial_position, otherwise the preceding move. point_loss belongs to the mover; negative values are search-estimate gains, not proof of superior play.",
             "accuracy":"Loss summaries clamp negative loss to zero; median averages the two middle values. top1/top3 are searched-choice counts, not percentages or rank estimates; ranked_moves gives coverage. Total loss is not final margin.",

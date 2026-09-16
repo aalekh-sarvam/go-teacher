@@ -351,7 +351,7 @@ async fn explore(State(s): State<Shared>, Path(id): Path<u64>, Json(req): Json<E
                 None => return (StatusCode::BAD_REQUEST, format!("bad coordinate {}", mv)).into_response(),
             }
         };
-        g.moves.push(crate::sgf::Move { color, point, comment: None, time_left: None });
+        g.moves.push(crate::sgf::Move { color, point, comment: None, time_left: None, also_considered: Vec::new() });
         color = color.opponent();
     }
     let opts = AnalysisOptions { max_visits: Some(req.visits.unwrap_or(400).min(5000)), human_profile: human, ..Default::default() };

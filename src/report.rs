@@ -917,6 +917,19 @@ pub fn render_markdown(a: &GameAnalysis) -> String {
     let _ = writeln!(out, "Human profiles used by the deeper searches: {}.", a.probes.profiles);
     out.push_str("This is similarity to human play at the tested ranks in one game, not a rating; say \"plays like\", pick the level of explanation and puzzles from it.\n");
 
+    // Decided-game framing
+    {
+        let mut from: Option<usize> = None;
+        for t in a.turns.iter() {
+            if (0.05..=0.95).contains(&t.winrate) { from = None; } else if from.is_none() { from = Some(t.turn); }
+        }
+        if let Some(f) = from {
+            if a.turns.len() > f + 20 {
+                let _ = writeln!(out, "\nGame framing: KataGo rated the game as decided from position {} onward (final estimate {}). Losses after that point changed the margin, not the result; judge them by points and take the main lessons from the moves up to position {}.", f, a.turns.last().map(|t| lead(t.score_lead)).unwrap_or_default(), f);
+            }
+        }
+    }
+
     // Good moves
     out.push_str("\n## Good moves\n\n");
     if a.praise.is_empty() {

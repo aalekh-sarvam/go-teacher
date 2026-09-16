@@ -554,6 +554,13 @@ fn build(i: usize, game: &GameRecord, turns: &[TurnEval], reviews: &[MoveReview]
     if let Some(k) = captured_at {
         hints.push(format!("The stone played at {} was captured at move {}.", r.mv, k));
     }
+    if !game.moves[i].also_considered.is_empty() {
+        hints.push(format!(
+            "The record shows the student also tried {} here before settling on {} (undo branches in the SGF).",
+            game.moves[i].also_considered.join(", "),
+            r.mv
+        ));
+    }
     if best_answers_last && !played_answers_last {
         hints.push(format!(
             "KataGo's move {} answers the opponent's last move at {}; the played move went elsewhere (a tenuki while threatened).",

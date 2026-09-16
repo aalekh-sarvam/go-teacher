@@ -69,6 +69,10 @@ pub struct Move {
     /// Clock time left after the move (BL/WL), seconds.
     #[serde(default)]
     pub time_left: Option<f64>,
+    /// Other moves recorded as sibling variations at this point of the game (undo branches in
+    /// KaTrain/OGS records): what the player tried before settling on this move. GTP coordinates.
+    #[serde(default)]
+    pub also_considered: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -327,13 +331,38 @@ pub fn count_lines(t: &Tree) -> usize {
 
 /// The line to analyse: at every branch point follow the variation with the most moves, preferring
 /// (on ties) a line that ends with passes, then the variation added last.
+#[allow(dead_code)]
 pub fn main_line(tree: &Tree) -> Vec<&Node> {
-    let mut out = Vec::new();
+    main_line_with_siblings(tree).into_iter().map(|(n, _)| n).collect()
+}
+
+/// Main line plus, for each node that starts a chosen variation, the first moves of the sibling
+/// variations that were not followed (the player's discarded tries).
+pub fn main_line_with_siblings(tree: &Tree) -> Vec<(&Node, Vec<(&str, String)>)> {
+    let mut out: Vec<(&Node, Vec<(&str, String)>)> = Vec::new();
     let mut t = tree;
+    let mut pending: Vec<(&str, String)> = Vec::new();
     loop {
-        out.extend(t.nodes.iter());
+        for (k, n) in t.nodes.iter().enumerate() {
+            let sib = if k == 0 { std::mem::take(&mut pending) } else { Vec::new() };
+            out.push((n, sib));
+        }
         match best_child(t) {
-            Some(child) => t = child,
+            Some(child) => {
+                for c in &t.children {
+                    if std::ptr::eq(c, child) {
+                        continue;
+                    }
+                    if let Some(first) = c.nodes.iter().find(|n| is_move_node(n)) {
+                        for key in ["B", "W"] {
+                            if let Some(v) = first.first(key) {
+                                pending.push((key, v.to_string()));
+                            }
+                        }
+                    }
+                }
+                t = child;
+            }
             None => break,
         }
     }
@@ -391,7 +420,8 @@ fn clean(s: &str) -> Option<String> {
 /// Parse SGF text into a [`GameRecord`] following the main line only.
 pub fn parse_game(input: &str) -> Result<GameRecord> {
     let tree = parse_tree(input)?;
-    let nodes = main_line(&tree);
+    let nodes_with_siblings = main_line_with_siblings(&tree);
+    let nodes: Vec<&Node> = nodes_with_siblings.iter().map(|(n, _)| *n).collect();
     let root = nodes.first().ok_or_else(|| anyhow!("SGF file has no nodes"))?;
 
     let mut game = GameRecord::default();
@@ -482,11 +512,20 @@ pub fn parse_game(input: &str) -> Result<GameRecord> {
                 }
                 let point = parse_point(v, sx, sy)?;
                 let time_left = node.first(if color == Color::Black { "BL" } else { "WL" }).and_then(|t| t.trim().parse::<f64>().ok());
+                let also_considered: Vec<String> = nodes_with_siblings[i]
+                    .1
+                    .iter()
+                    .filter(|(k, _)| *k == key)
+                    .filter_map(|(_, v)| parse_point(v, sx, sy).ok())
+                    .map(|p| p.map(|c| c.to_gtp(sy)).unwrap_or_else(|| "pass".to_string()))
+                    .filter(|m| Some(m.as_str()) != point.map(|c| c.to_gtp(sy)).as_deref())
+                    .collect();
                 game.moves.push(Move {
                     color,
                     point,
                     comment: comment.clone(),
                     time_left,
+                    also_considered,
                 });
                 played = true;
                 seen_move = true;
@@ -536,6 +575,16 @@ mod tests {
         assert_eq!(g.moves[0].comment.as_deref(), Some("a ] bracket"));
         assert_eq!(g.moves[1].point.unwrap().to_gtp(9), "C7");
         assert!(g.warnings.iter().any(|w| w.contains("2 variations")));
+    }
+
+    #[test]
+    fn records_discarded_tries_as_also_considered() {
+        // KaTrain undo: Black tried D7 (dc), took it back and played F9 (fa); the F9 branch is longer.
+        let sgf = "(;SZ[9];B[ee];W[cc](;B[dc];W[hd])(;B[fa];W[cg];B[gg];W[]))";
+        let g = parse_game(sgf).unwrap();
+        assert_eq!(g.moves[2].point.unwrap().to_gtp(9), "F9");
+        assert_eq!(g.moves[2].also_considered, vec!["D7".to_string()]);
+        assert!(g.moves[0].also_considered.is_empty());
     }
 
     #[test]
