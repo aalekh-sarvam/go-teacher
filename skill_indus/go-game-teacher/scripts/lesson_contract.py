@@ -105,9 +105,15 @@ def derive_context_anchors(result, parsed):
 def brief(parsed):
     """A model-facing reading view. Keep the original parsed file for validation/generation."""
     out = deepcopy(parsed)
-    # Keep the compact game timeline: it is the context for phase/lead observations.
+    # Keep the compact game timeline (including moves[].stones_captured), teaching.praise and
+    # student_profile untouched: they are the context for phase/lead/praise/level observations.
     # Full candidate tables still live in parsed.json alongside untruncated sequences.
     out.pop('move_details',None)
+    # search_coverage and each candidate's evaluation_coverage / investigation_coverage are small and
+    # stay in the brief: moment selection prefers candidates whose deep evaluation is known complete.
+    for key in ('student_profile','search_coverage'):
+        if key in parsed: out[key] = deepcopy(parsed[key])
+    out['teaching']['praise'] = deepcopy(parsed.get('teaching',{}).get('praise',[]))
     for c in out['teaching']['candidates']:
         e = c.get('evidence',{})
         e['sequences'] = [{k:v for k,v in s.items() if k not in ('probabilities','seed')} for s in e.get('sequences',[])]
@@ -115,6 +121,8 @@ def brief(parsed):
             s['total_plies'] = len(s['moves']);s['moves'] = s['moves'][:6];s['preview_only'] = True
         # Read the exact selected line from parsed.json before narrating numbered stones.
         for key in ('black_stones','white_stones'): c.pop(key,None)
+        for key in ('evaluation_coverage','investigation_coverage'):   # kept verbatim (never truncated)
+            if key in c: c[key] = deepcopy(c[key])
         if 'tree' in e: e['tree']=[{k:v for k,v in t.items() if k!='children'} for t in e['tree']]
         lr=e.get('local_reading') or {}
         lr.pop('allowed_moves',None)

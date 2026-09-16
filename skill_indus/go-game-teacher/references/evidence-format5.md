@@ -2,6 +2,127 @@
 
 Read this for new reports. References describing formats 2–4 remain for older uploads.
 
+## Evidence versions
+
+The evidence block carries `report_format: 5` and `evidence_version`. The parser accepts
+**version 1 and version 2**; any other value is refused and the user is told the skill and
+go_teacher are out of step. Version 2 adds the fields below; a version-1 report simply lacks
+them (treat them as unknown, never as zero or empty praise).
+
+| Field (version 2) | Where | Use |
+|---|---|---|
+| `student_profile` | top level | Level statement and band selection (below) |
+| `teaching.praise[].kind_label`, `note`, `stones_captured`, `gap`, `second`, `human_prob`, `rating`, `rating_source` | praise entries | The only source of praise (below) |
+| `refutation_with_colours`, `better_line_with_colours` | each teaching candidate | Narrating the played and best lines |
+| `evidence.sequences[].moves_with_colours` | each sequence | Narrating sampled lines |
+| `move_details[n].candidates[].pv_with_colours` | candidate tables | Narrating alternatives |
+| `moves[].stones_captured` | timeline | Capture ledger: stones removed by that move |
+| `search_coverage` | top level | How much of the shortlist reached the requested deep visits (below) |
+| `evaluation_coverage`, `investigation_coverage` | each teaching candidate | Whether the move is deeply verified and whether optional investigations exist (below) |
+| `evidence.unavailable.teaching_investigations` | candidate without investigations | Replaces legacy `unavailable.deeper_search`; both mean only "no investigations" |
+
+### `student_profile`
+
+```json
+"student_profile": {
+  "estimate": {"rank_value": -12.3, "rank_label": "12k", "low_label": "15k", "high_label": "10k",
+               "band_stones": 2.4, "samples": 33,
+               "wording": "plays like a 12k in this game (range 15k–10k, 33 moves)"},
+  "phases": [{"phase": "opening", "estimate": {...}}],
+  "working_rank": {"rank_value": -11.6, "rank_label": "12k", "games": 3},
+  "profiles_used": {"student": "rank_12k", "target": "rank_8k", "opponent": "rank_20k",
+                    "student_source": "working rank from earlier games", "opponent_source": "SGF rank",
+                    "small_board_caveat": true},
+  "sgf_rank": "15k",
+  "caveat": "The estimate is the similarity of this game's moves to human play ... not a rating ..."
+}
+```
+
+Rules: quote `estimate.wording` verbatim and follow it with the caveat; the phrase is "plays
+like", never "is" or "rated". `estimate` and `working_rank` may be null (too few moves, no
+history): fall back to `profiles_used.student` and say where it came from (`student_source`).
+Phase estimates are absent when the sample was too small; do not compute your own. The band for
+lesson and puzzle selection comes from `working_rank.rank_label` first (level-ladder.md).
+
+### Praise entries
+
+```json
+{"move_number": 33, "move": "J5", "player": "B", "kind": "Capture", "kind_label": "capture",
+ "note": "captured 6 stones without losing points", "stones_captured": 6, "gap": 62.9,
+ "second": "H4", "human_prob": 0.18, "rating": "a move most 8k players find first",
+ "rating_source": "human-policy ladder (weakest profile whose first choice is this move)"}
+```
+
+`kind_label` values and what each means: `capture` (stones removed or an opponent group killed
+without losing points), `saved a group` (the student's own group forecast went from dead to
+alive), `only good move` (KataGo's first choice, the best other searched move `gap` points
+worse), `non-obvious best move` (best move that the student's human profile gives under 25%),
+`best move` (first choice with a smaller gap). `note` is a factual sentence written by the
+program: copy it. `rating` and `rating_source` are both present or both null; copy both or
+neither. `human_prob` is a model probability at the student's profile, not a frequency. A move
+absent from `teaching.praise` is praised only when `moves[].stones_captured > 0`, and then only
+for the capture. The list is empty when nothing qualified; then say nothing about praise.
+
+### Colour tokens
+
+Every `*_with_colours` list writes one token per ply: `"B D7"`, `"W E3"`, `"W pass"`. The
+first token of `refutation_with_colours` is the opponent's; of `better_line_with_colours` the
+student's; of `moves_with_colours` whoever `first_to_move` names. Narrate a line by copying the
+tokens in order ("W F3, then B D7, then W H8"); never derive colours from move parity and never
+write a bare coordinate list. In version 1 these lists are absent: build them from `first_to_move`
+with a short script, not by hand, before narrating.
+
+### Search coverage (newer version-2 reports; additive)
+
+The app first evaluates every position, then re-evaluates the positions before and after each
+shortlisted mistake at the requested deep visits and keeps searching until the final shortlist is
+covered. These fields record what actually happened. They are small and stay in brief.json;
+`parse_review.coverage_summary(parsed)` and `facts.coverage[N]` give one line per candidate.
+
+```json
+"search_coverage": {"version": 1, "two_pass_enabled": true, "requested_deep_visits": 1000,
+                    "final_candidates": 8, "verified_candidates": 8, "verification_rounds": 1,
+                    "additional_positions": 4, "reused_positions": 12},
+"teaching": {"candidates": [{
+  "move_number": 43,
+  "evaluation_coverage": {"status": "complete",
+    "before": {"turn": 42, "visits": 1000, "requested_visits": 1000, "purpose": "deep", "status": "complete"},
+    "after":  {"turn": 43, "visits": 1000, "requested_visits": 1000, "purpose": "verification", "status": "complete"}},
+  "investigation_coverage": {"status": "not_selected", "reason": "outside_featured_budget"},
+  "evidence": {"unavailable": {"teaching_investigations": "not selected for featured analysis"}}
+}]}
+```
+
+Two independent questions, two fields:
+
+- **`evaluation_coverage.status`** — was the move *deeply evaluated*? `complete` (both the position
+  before and after the move reached the requested deep visits; the only status that supports the
+  words "verified" / "deep evaluation"), `incomplete` (at least one side still `pending`; say so, never
+  call it verified; a finished two-pass run should not show this), `disabled` (single-pass analysis;
+  the base visits are the evidence), `unknown` (not recorded). `before` / `after` carry `turn`,
+  `visits`, `requested_visits`, `purpose` (`initial` | `deep` | `verification` | `unknown`) and a
+  position `status` (`complete` | `pending` | `disabled` | `unknown`). Quote visits from these fields
+  ("verified at 1000 visits on both sides").
+- **`investigation_coverage.status`** — do the optional human/local/what-if *investigations* exist?
+  `available` (all ran: `evidence.sequences`, `local_reading`, `rollout_comparisons`, `human_refutations`
+  are present), `partial` (some; use only the sequence IDs present; `failed` / `inapplicable` list the
+  rest), `not_selected` (outside the featured budget; `reason` says why), `disabled`, `unavailable`.
+  Anything other than `available` / `partial` means: no `local` or `what_if` panel, no
+  `sequence_explanations`, no human reply in prose. It says **nothing** about deep evaluation: a
+  `complete` + `not_selected` candidate is a verified mistake taught from its refutation, better line,
+  policies and chain.
+- `search_coverage`: `verified_candidates` of `final_candidates` are `complete`; `verification_rounds`
+  are catch-up batches after the first deep pass; `additional_positions` are positions those batches
+  searched; `reused_positions` were already deep. `requested_deep_visits` is null when `two_pass_enabled`
+  is false. `interpretation.coverage` repeats the two-status rule.
+
+Legacy rule: reports with `evidence_version` 1, format 2–4, or a version-2 block written before these
+fields have **unknown** coverage (`legacy: true` in the summary) — never "incomplete" and never
+"verified". Their `evidence.unavailable.deeper_search` ("not selected for featured analysis") means
+exactly what `teaching_investigations` means now: no investigations for that candidate. Do not read
+either key as "not deeply evaluated". Unknown coverage does not require the app's JSON or a
+re-analysis; teach from the evidence present.
+
 ## Workflow and data contract
 
 Run `python scripts/parse_review.py report.md parsed.json --brief-output brief.json`.
@@ -17,8 +138,10 @@ structures use `Black`/`White`; do not reinterpret them as alternating move numb
 
 Each `teaching.candidates[]` contains `move_number`, `player`, `played_move`, `preferred_move`,
 `point_loss`, `theme`, the actual stone lists, chains, atari facts, base refutation and an
-`evidence` object. Deeper computations cover the featured moments (default four). Other
-shortlisted moments keep their existing facts and have an explicit unavailable reason.
+`evidence` object. The optional investigations (human samples, local reading, trees, rollouts) cover
+the featured moments (default four). Other shortlisted moments keep their existing facts and have an
+explicit reason in `evidence.unavailable.teaching_investigations` (legacy key: `deeper_search`); see
+"Search coverage" above — that reason is about investigations, not about deep evaluation.
 
 `evidence.sequences[]`: stable `id`, `from_turn` (number of actual game moves before branching),
 `first_to_move`, `moves` (including any initial played/best move and passes), `source`, `profile`,
@@ -33,7 +156,8 @@ Existing format-5 reports remain valid. New reports add fields without replacing
 candidates, alternatives, refutations, human sequences, phase facts or status events.
 
 - `moves[]` still has `number`, `color`, `move`. It now adds `point_loss` for the **mover** and
-  `score_black` **after** that move. Positive score favours Black; negative favours White.
+  `score_black` **after** that move, and in version 2 `stones_captured` (stones removed by that
+  move; 0 means none). Positive score favours Black; negative favours White.
   The score before move N is the score after N−1, or `initial_position.score_black` for move 1.
   `initial_position` also includes Black winrate (0–1) and search visits; it can be null.
   Never alternate the score sign with the player to move. For the student's lead, negate
@@ -58,8 +182,10 @@ candidates, alternatives, refutations, human sequences, phase facts or status ev
   are stored once. Only teaching candidates carry the full generated hints, atari facts and
   local chains; do not assume that commentary exists for every context move.
 - Continue using the unchanged `arc.phases`, `arc.status_changes`, local chains, atari hints,
-  `captured_at` and `missed_opportunities`. Status events are selected detections, not a complete
-  capture ledger or a safety assessment of every group. No event does not imply a safe group.
+  `captured_at` and `missed_opportunities`. Status events are selected detections, not a
+  safety assessment of every group; version 2 also records captures of groups the engine
+  already counted dead (`from: "dead"`, `to: "captured"`). The complete capture ledger is
+  `moves[].stones_captured`. No event does not imply a safe group.
 
 Use this context for a few broad observations, then focus the lesson on specific mistakes and
 improvements. For example, a lower middlegame loss can support "your middlegame was steadier
@@ -97,7 +223,8 @@ do not request the JSON or SGF, fabricate evaluations, or treat missing clocks a
 | `human_refutations` | Show the opponent profile's most likely reply and its engine evaluation. It can miss the punishment. | Make a tempting wrong choice human-plausible, then verify its refutation on the new board. |
 | `sequences`, `rollout_comparisons` | Switch between the engine and two student profiles; explain how subsequent choices differ in one sampled future. | Test whether the student can follow the principle after the first correct move in a different externally sourced position. |
 | `missed_opportunities` | Explain an opponent's gift and how the student gave it back. Do not infer a local tactic from two score losses alone. | Adapt an external punish-the-mistake problem with an unobvious continuation. |
-| `rank_fit` | Describe relative similarity to tested profiles in each phase, cautiously. It is not a calibrated rank. | Adjust explanation and scaffolding, not truth, from the student's chosen level and observed mistake. Do not invent rank-rated puzzles. |
+| `rank_fit`, `student_profile` | Quote `student_profile.estimate.wording` with its caveat; it is similarity to human play, not a calibrated rank. | Choose the band, puzzle tier and prose register from level-ladder.md. Do not invent rank-rated puzzles; state the tier's source instead. |
+| `teaching.praise` | The only source of praised moves: copy `note`, `rating`, `rating_source`; explain non-obviousness from `human_prob`. | None (praise is not practised). |
 
 Use the evidence that supports each chosen lesson. Do not force every available field into every
 lesson or quiz. Preserve the game arc, cause/effect story, constructive praise, principles and
@@ -137,28 +264,37 @@ For new lessons also set `grounding_version: 1` and follow [grounding-and-practi
     "move_number": 23,
     "title": "Count the reply before moving",
     "concept_label": "Reading",
+    "theme": "reading / tactics",
     "story": "How this position arose, using actual move numbers.",
     "principle": "Before playing elsewhere, read the opponent's strongest local reply.",
+    "level_framing": "The 12k profile gives the played move about 1 in 1000; the 8k profile prefers H4 (78%).",
     "panels": {
       "position": "What to notice before moving.",
-      "played": "Explain the consequence without claiming the sampled human reply is certain.",
-      "best": "Explain the stronger plan.",
+      "played": "White plays W H4, Black answers B J5, then W G9: walk the copied colour tokens and say what the move allows.",
+      "best": "Explain the stronger plan, walking better_line_with_colours the same way.",
       "alternatives": "Explain how to compare the searched branches.",
       "local": "Explain the restricted reading and its limitations, when available.",
       "what_if": "Explain what the two sampled futures illustrate."
     },
     "alternative_explanations": {"D4": "Prose about this searched choice, if present."}
   }],
-  "puzzles": [], "good_moves": [], "concepts_learned": []
+  "puzzles": [],
+  "good_moves": [{"move_number": 33, "move": "J5", "kind_label": "capture",
+                  "explanation": "captured 6 stones without losing points. ...",
+                  "rating": "copied", "rating_source": "copied"}],
+  "concepts_learned": []
 }
 ```
 
 Use actual move numbers and searched alternatives; the example is schematic. In schema 2,
-**do not emit** played/preferred moves, colour, point losses, winrates, arrays, trees, refutations
-or ownership in the lesson object. The generator joins them from parsed.json. Keep `panels`
-values as prose strings. It displays the numerical support itself. Exact line commentary must
-be grounded in the full sequence, not the brief preview. Legacy schema 1 remains supported for
-format 2–4 reports. Old generator fields for game_arc, story, concepts, praise and progress remain.
+**do not emit** `alternatives`, `played_quality`, `concept`, played/preferred moves, colour,
+point losses, winrates, arrays, trees, refutations or ownership in the lesson object: the
+generator rejects the forbidden keys and joins the data from parsed.json. Keep `panels` values as
+prose strings built from copied colour tokens; the generator displays the numerical support and
+the sequences itself. Exact line commentary must be grounded in the full sequence, not the brief
+preview. `good_moves` entries come only from `teaching.praise` (or recorded captures); see
+SKILL.md step 8. Legacy schema 1 remains supported for format 2–4 reports. Old generator fields
+for game_arc, story, concepts, praise and progress remain.
 
 ## Practice schema additions
 

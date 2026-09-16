@@ -80,6 +80,8 @@ Voice and style for both:
 
 - Write as a narrator watching the game unfold, then dropping in to teach. Past tense for what happened ("White built thickness on the right"), present tense for the principle ("When your group is heavy, don't invade").
 - Always anchor in move numbers the student can find in the compact move list.
+- Every narrated move carries its colour, copied from the record: actual moves as `moves[].color` + `move` ("B G4 at 19, W F3 at 22"), engine lines as `*_with_colours` tokens. Never write a bare coordinate list and never alternate colours yourself.
+- The arc never praises a move: praise lives in `good_moves` and comes only from `teaching.praise` (SKILL.md step 8). The arc may say a move "settled the corner" only when a status or capture fact supports it.
 - Connect, don't list. Prefer "because", "so", "which is why", "the price of" over a bare sequence of move references.
 - Keep it honest about uncertainty: a saturated winrate does not mean the human game was decided. Check point losses and later score changes; do not dismiss a reversal as noise merely because the earlier winrate was near 0% or 100%.
 - Never invent captures, ladders, atari, or ko the report doesn't support (see below).
@@ -90,7 +92,7 @@ Voice and style for both:
 
 Everything in `references/go-teaching-concepts.md` and SKILL.md's "Board-fact discipline" applies to arc claims too — and arc claims are the easiest place to fabricate, because you're narrating across many moves. In particular:
 
-- Only claim a capture from an explicit capture fact or a legal replay of the moves. Coordinates or a score change alone do not establish a capture, and a capture alone does not establish that a different capture was missed.
+- Only claim a capture from an explicit capture fact: `moves[].stones_captured > 0` (evidence version 2, the complete ledger — quote the count), a `captured_at` note, or an `arc.status_changes` row. Coordinates or a score change alone do not establish a capture, and a capture alone does not establish that a different capture was missed. The eval lesson wrote "nothing else changed hands" in an endgame with 5- and 8-stone captures because it read only the status table; check the ledger.
 - Only claim atari or a liberty count from the hints or a diagram you can see — don't infer "this group was in atari" by imagination.
 - Only claim a tenuki if the move list shows the player played elsewhere while a threat was on the board.
 - `loss_region` tells you *where* points changed; use it to say where, not to invent a tactic.
@@ -100,7 +102,7 @@ Everything in `references/go-teaching-concepts.md` and SKILL.md's "Board-fact di
 
 ## Verified Go Magic tutorial library
 
-Go Magic (gomagic.org) is an interactive Go learning platform with free and paid video courses. These URLs were verified at the time this reference was written. **Re-verify a slug before citing if you haven't fetched it this session** — courses are occasionally re-slugged. The fastest check is a web search restricted to `gomagic.org`; the courses index is https://gomagic.org/courses/ . Prefer free courses and free lessons for resource links; note paid courses honestly ("paid course, free trial lesson").
+Go Magic (gomagic.org) is an interactive Go learning platform with free and paid video courses. These URLs were verified at the time this reference was written and are the **only Go Magic URLs a lesson may cite without fetching**; `level-ladder.md` table 1 names its Go Magic resources from this library. **Re-verify a slug before citing if you haven't fetched it this session** — courses are occasionally re-slugged. The fastest check is a web search restricted to `gomagic.org`; the courses index is https://gomagic.org/courses/ . Prefer free courses and free lessons for resource links; note paid courses honestly ("paid course, free trial lesson").
 
 Map each mistake theme / arc chain to the best Go Magic resource:
 
@@ -143,4 +145,4 @@ These appear on the Go Magic courses index but their slugs were not individually
 
 ### Pairing with other sources
 
-Go Magic pairs well with Sensei's Library (https://senseis.xmp.net/ ) for pattern names and proverbs, and with GoProblems / tsumego collections for drill positions. For each `concepts_learned` entry, list the single best Go Magic link plus one Sensei's Library link; do not pile on more than 3 resources.
+Go Magic pairs well with Sensei's Library (https://senseis.xmp.net/ ) for pattern names and proverbs, and with the tiered tsumego sources in `level-ladder.md` table 2 for drill positions. For each `concepts_learned` entry, list the single best Go Magic link first, one Sensei's Library link second (fetched this session), and never more than 3 resources. Anecdotes come only from the curated list in `go-teaching-concepts.md`.

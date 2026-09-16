@@ -38,6 +38,19 @@ start with an artificial pass by the attacker: that pass also changes the player
 - `rollouts[level].favours_start` interprets the signed comparison for the student. A negative
   best-minus-played result favours the played-start sample. It still includes subsequent choices
   and cannot replace the main engine assessment or prove the first move caused the difference.
+- `coverage` (also `lessons[N].coverage`) has `evaluation_status`, `before_visits`,
+  `after_visits`, `investigation_status`, `legacy` and a quotable `text`
+  (`{{fact:/lessons/23/coverage/text}}`). Coverage constrains claims, it does not make them:
+  "verified", "deeply verified" or "deep evaluation" is allowed only when `evaluation_status`
+  is `complete` (the validator reports a PROBLEM otherwise, including for `unknown` — every
+  older report); `incomplete` must stay visible as uncertainty; `unknown` is "coverage not
+  recorded", not a defect. When `investigation_status` is `not_selected` / `disabled` /
+  `unavailable` (legacy `evidence.unavailable.deeper_search` means the same), there are no
+  human, restricted-reading or what-if sequences for that move: omit `panels.local`,
+  `panels.what_if` and `sequence_explanations`, and do not describe a "human reply" — the
+  validator warns. A `complete` candidate with no investigations is still a fully verified
+  lesson built from refutation, better line, policies, chain and searched alternatives. Game
+  coverage never verifies a transformed puzzle: puzzle checks stay independent.
 
 ## Check the actual draft
 
@@ -77,9 +90,20 @@ elsewhere does not repair a reversed sign or defender in the sentence itself.
 
 For progress, author the summary prose but let the renderer populate rows from
 `current.progress_rows`; grounded lessons ignore manually transcribed progress rows. If there
-is no identifiable earlier game, describe this game alone. Praise remains supported, with no
-required rank badge; omit `rating` unless an actual source supports it, and supply `rating_source`
-when it does. Low loss alone does not prove a move was the only good choice.
+is no identifiable earlier game, describe this game alone.
+
+Praise (`good_moves`) comes only from `teaching.praise` (evidence version 2): copy `note` as
+the first sentence, quote `stones_captured` and `gap` as given, explain non-obviousness only from
+`human_prob`, and copy `rating` + `rating_source` verbatim or omit both. The checker rejects a
+`good_moves` entry whose move is not the student's actual move, or that carries a `rating`
+without `rating_source`; it also requires the move to be in `teaching.praise` or to have
+`moves[].stones_captured > 0`. Low loss alone does not prove a move was the only good choice;
+the eval lesson's "praised by the engine" claim about a move outside the (empty) praise list is
+the error this rule prevents.
+
+Sequence prose (`panels.played`, `panels.best`, `sequence_explanations`) walks the copied
+`*_with_colours` tokens in order; `facts.lessons[N].sequences[id].text` gives the same plies as
+"1 W F3 → 2 B D7 → …" for fact checks.
 
 Use optional `sequence_explanations: {"played_student": "...", "best_target": "..."}` for line
 commentary tied to a particular human sample. Only IDs present in that lesson’s full evidence
@@ -89,9 +113,12 @@ sequence is selected. Without it, the UI explicitly labels the shared engine/gen
 ## Research and transform a particular external example
 
 Research remains uncapped. Find an accessible **specific diagram/problem**, not just a course
-homepage or generic strategy article. For classic tsumego, `references/tsumego-source-formats.md`
-gives exact, citable positions (`scripts/parse_tasuki_tex.py`) and verifies bounded objectives
-mechanically (`scripts/solve_tsumego.py`) — prefer them over transcribing image diagrams or
+homepage or generic strategy article, from the tier that matches the student's band
+(`references/level-ladder.md` table 2): Tasuki `cho-1` / `cho-2` / `cho-3` via
+`scripts/parse_tasuki_tex.py`, OGS collections by `puzzle_rank` via `scripts/parse_ogs_puzzle.py`,
+Sensei's or gogameguru SGFs via `scripts/parse_sgf_problem.py`. All three emit the same puzzle
+dict; verify bounded objectives mechanically with `scripts/solve_tsumego.py`
+(`references/tsumego-source-formats.md`). Prefer these over transcribing image diagrams or
 hand-reading a solution. Preserve `source.url` and `source.title`; add:
 
 - `source.example_locator`: problem ID, figure number, section/diagram caption or video timestamp.

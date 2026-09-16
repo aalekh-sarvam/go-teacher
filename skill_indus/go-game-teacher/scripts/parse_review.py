@@ -5,7 +5,8 @@ Default output is *brief*: everything from the summary and teaching-candidates s
 compact move list, and scalar per-move facts, but candidate tables and board diagrams only for
 teaching candidates and praised moves. Pass --full to keep every table and diagram.
 
-Usage: parse_review.py <input.md> <output.json> [--full]
+Usage: parse_review.py <input.md> <output.json> [--full] [--brief-output brief.json]
+       [--facts-output facts.json [--moves N ...]]
 """
 
 import json
@@ -15,6 +16,18 @@ import sys
 CATEGORIES = r'(best/excellent|good|inaccuracy|mistake|big mistake|blunder)'
 MOVE = r'([A-T]\d+|pass)'
 SUPPORTED_FORMATS = {2, 3, 4, 5}   # "Report format: N" line written by go_teacher
+SUPPORTED_EVIDENCE_VERSIONS = {1, 2}   # evidence_version inside the format-5 JSON block; 2 adds praise
+                                       # kinds/ratings, student_profile, *_with_colours and stones_captured,
+                                       # and (additively) search_coverage / per-candidate coverage fields
+SUPPORTED_COVERAGE_VERSIONS = {1}      # search_coverage.version; other versions are passed through as unknown
+
+# Deep-coverage vocabularies (evidence_version 2 reports written after the two-pass verification work).
+EVALUATION_STATUSES = ('complete', 'incomplete', 'disabled', 'unknown')        # evaluation_coverage.status
+POSITION_STATUSES = ('complete', 'pending', 'disabled', 'unknown')             # evaluation_coverage.before/after.status
+INVESTIGATION_STATUSES = ('available', 'partial', 'not_selected', 'disabled', 'unavailable')   # investigation_coverage.status
+# evidence.unavailable keys that mean "no human/local/what-if investigations were run for this candidate".
+# 'deeper_search' is the legacy spelling: it says nothing about the depth of the main evaluation.
+NO_INVESTIGATIONS_KEYS = ('teaching_investigations', 'deeper_search')
 
 
 def report_format(text):
@@ -456,8 +469,17 @@ def parse_review(text, full=False):
         if len(blocks) != 1:
             raise ValueError('Format 5 requires exactly one complete evidence block')
         result = json.loads(blocks[0])
-        if result.get('report_format') != 5 or result.get('evidence_version') != 1:
-            raise ValueError('Evidence version does not match report format')
+        if result.get('report_format') != 5:
+            raise ValueError('Evidence block report_format does not match the report header')
+        ev = result.get('evidence_version')
+        if ev not in SUPPORTED_EVIDENCE_VERSIONS:
+            raise SystemExit(f"This report's evidence block is evidence_version {ev!r}; this parser understands "
+                             f"{sorted(SUPPORTED_EVIDENCE_VERSIONS)}. Update the go-game-teacher skill (or go_teacher) so the versions match.")
+        # Version 2 fields (teaching.praise[].kind/rating/note, student_profile, *_with_colours,
+        # moves[].stones_captured) are additive and passed through untouched. So are the deep-coverage
+        # fields (top-level search_coverage, candidates[].evaluation_coverage / investigation_coverage,
+        # evidence.unavailable.teaching_investigations, interpretation.coverage); read them through
+        # coverage_summary(). Reports without them have unknown coverage, never incomplete or verified.
         if result['game_info']['num_moves'] != len(result['moves']):
             raise ValueError('Evidence move count mismatch')
         for i,m in enumerate(result['moves'],1):
@@ -489,12 +511,48 @@ def parse_review(text, full=False):
     return result
 
 
+def candidate_coverage(c, coverage_version=1):
+    """Derived coverage for one teaching candidate. Missing fields are 'unknown' (legacy=True), never
+    'incomplete' or 'complete'. evidence.unavailable.teaching_investigations or the legacy
+    evidence.unavailable.deeper_search only mean 'investigations not_selected'."""
+    ev = c.get('evaluation_coverage') if isinstance(c.get('evaluation_coverage'), dict) else {}
+    inv = c.get('investigation_coverage') if isinstance(c.get('investigation_coverage'), dict) else {}
+    unavailable = (c.get('evidence') or {}).get('unavailable') or {}
+    legacy = not ev and not inv
+    known = coverage_version in SUPPORTED_COVERAGE_VERSIONS
+    e_status = ev.get('status') if known and ev.get('status') in EVALUATION_STATUSES else 'unknown'
+    def visits(side):
+        pos = ev.get(side) if isinstance(ev.get(side), dict) else {}
+        v = pos.get('visits')
+        return v if known and isinstance(v, int) and not isinstance(v, bool) else None
+    if known and inv.get('status') in INVESTIGATION_STATUSES:
+        i_status = inv['status']
+    elif any(k in unavailable for k in NO_INVESTIGATIONS_KEYS):
+        i_status = 'not_selected'
+    else:
+        i_status = 'unknown'
+    return {'move_number': c.get('move_number'), 'evaluation_status': e_status,
+            'before_visits': visits('before'), 'after_visits': visits('after'),
+            'investigation_status': i_status, 'legacy': legacy}
+
+
+def coverage_summary(parsed):
+    """[{move_number, evaluation_status, before_visits, after_visits, investigation_status, legacy}]
+    for every teaching candidate, in report order. Works for every supported format: formats 2-4 and
+    evidence_version 1 give evaluation_status 'unknown' and legacy True throughout."""
+    sc = parsed.get('search_coverage') if isinstance(parsed.get('search_coverage'), dict) else {}
+    version = sc.get('version', 1)
+    return [candidate_coverage(c, version) for c in parsed.get('teaching', {}).get('candidates', [])]
+
+
 def main():
     import argparse
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('input'); ap.add_argument('output'); ap.add_argument('--full', action='store_true')
     ap.add_argument('--brief-output', help='Optional prose-model reading view; do not use it to generate HTML')
     ap.add_argument('--facts-output', help='Derived facts for the teaching agent; no additional user upload')
+    ap.add_argument('--moves', type=int, nargs='+', metavar='N',
+                    help='Build lesson facts only for these teaching moments (default: all); praise_facts are always built')
     args = ap.parse_args()
     with open(args.input, encoding='utf-8') as f: text = f.read()
     result = parse_review(text, full=args.full)
@@ -505,12 +563,17 @@ def main():
         with open(args.brief_output,'w',encoding='utf-8') as f: json.dump(brief(result),f,indent=1,ensure_ascii=False)
     if args.facts_output:
         from teaching_facts import build_facts
-        with open(args.facts_output,'w',encoding='utf-8') as f: json.dump(build_facts(result),f,indent=1,ensure_ascii=False)
+        with open(args.facts_output,'w',encoding='utf-8') as f: json.dump(build_facts(result,args.moves),f,indent=1,ensure_ascii=False)
+    elif args.moves:
+        print('--moves only affects --facts-output; nothing to select', file=sys.stderr)
     full = args.full
     t = result['teaching']
-    print(f"Report format {result['report_format']}  Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "
+    cov = coverage_summary(result)
+    complete = sum(1 for c in cov if c['evaluation_status'] == 'complete')
+    coverage_note = f"deep evaluation complete: {complete}/{len(cov)}" if any(not c['legacy'] for c in cov) else 'coverage not recorded'
+    print(f"Report format {result['report_format']}  evidence v{result.get('evidence_version','-')}  Student: {result['game_info'].get('student')}  moves: {len(result['moves'])}  "
           f"teaching candidates: {len(t['candidates'])}  praised: {len(t['praise'])}  "
-          f"move details: {len(result['move_details'])} ({'full' if full else 'brief'})", file=sys.stderr)
+          f"move details: {len(result['move_details'])} ({'full' if full else 'brief'})  {coverage_note}", file=sys.stderr)
 
 
 if __name__ == '__main__':

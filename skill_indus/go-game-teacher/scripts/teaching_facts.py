@@ -7,6 +7,7 @@ from copy import deepcopy
 import json
 import re
 from go_rules import Position, COLS, sequence_position
+from parse_review import coverage_summary
 
 
 def side(c):
@@ -41,6 +42,15 @@ def group_fact(p, anchor):
             'liberties': sorted(gtp(p, x) for x in libs), 'liberty_count': len(libs)}
 
 
+def with_colours(first_to_move, moves, given=None):
+    """['B R14', 'W L3', ...]: the report's *_with_colours list when present, else computed
+    from the first player. The report's list wins so narration copies the emitter's tokens."""
+    if given and len(given) == len(moves):
+        return list(given)
+    c = side(first_to_move)
+    return [f"{c if i % 2 == 0 else opponent(c)} {m}" for i, m in enumerate(moves)]
+
+
 def sequence_fact(parsed, seq):
     sequence_position(parsed, seq)  # Includes artificial passes and original history.
     c = side(seq['first_to_move'])
@@ -49,7 +59,32 @@ def sequence_fact(parsed, seq):
     return {'from_turn': seq['from_turn'], 'kind': 'variation, not actual game moves',
             'source': seq.get('source'), 'profile': seq.get('profile'),
             'score_black': seq.get('score_black'), 'plies': plies,
+            'with_colours': with_colours(seq['first_to_move'], seq['moves'], seq.get('moves_with_colours')),
             'text': ' → '.join(f"{x['ply']} {x['color']} {x['move']}" for x in plies)}
+
+
+def praise_facts(parsed):
+    """One entry per teaching.praise[] row with the exact quotable strings and numbers.
+    Accepts evidence v1/v2 rows (mv, gap) and legacy rows (move, gap_points)."""
+    out = []
+    for p in parsed.get('teaching', {}).get('praise', []) or []:
+        n = p.get('move_number', p.get('number'))
+        gap = p.get('gap', p.get('gap_points'))
+        entry = {'move_number': n, 'move': p.get('mv', p.get('move')),
+                 'player': p.get('player', side(p.get('color', p.get('player_color')))),
+                 'kind': p.get('kind'), 'kind_label': p.get('kind_label'), 'note': p.get('note'),
+                 'stones_captured': p.get('stones_captured'), 'gap': gap, 'second_best': p.get('second', p.get('second_best')),
+                 'rating': p.get('rating'), 'rating_source': p.get('rating_source')}
+        hp = p.get('human_prob')
+        if isinstance(hp, (int, float)):
+            entry['human_prob_percent'] = round(hp*100)
+        wb = p.get('winrate_before')
+        if isinstance(wb, (int, float)):
+            entry['winrate_before_percent'] = round(wb*100)
+        if entry['rating'] and not entry['rating_source']:
+            entry['rating'] = None; entry['rating_omitted'] = 'no rating_source in the report'
+        out.append(entry)
+    return out
 
 
 def policy_fact(c):
@@ -105,6 +140,40 @@ def history_facts(parsed):
             'note': 'Current stats come only from this report. Metadata matches may be earlier analyses of the same game; exclude from trends. Raw history remains in parsed.json.'}
 
 
+def coverage_text(entry):
+    """One quotable sentence per coverage entry. 'complete' is the only status that supports the word
+    'verified'; unknown/legacy coverage is 'not recorded', never 'incomplete'."""
+    e, b, a = entry['evaluation_status'], entry['before_visits'], entry['after_visits']
+    if e == 'complete':
+        if b is not None and b == a:
+            text = f'Deep evaluation complete: verified at {b} visits on both sides of the move.'
+        elif b is not None and a is not None:
+            text = f'Deep evaluation complete: verified at {b} visits before and {a} visits after the move.'
+        else:
+            text = 'Deep evaluation complete on both sides of the move.'
+    elif e == 'incomplete':
+        text = 'Deep evaluation incomplete: not both positions reached the requested visits; do not call this move verified.'
+    elif e == 'disabled':
+        text = 'Two-pass deep evaluation was disabled for this analysis; single-pass evidence only.'
+    else:
+        text = 'Coverage not recorded for this move (older report); do not call it verified or incomplete.'
+    inv = {'available': 'Teaching investigations (human/local/what-if sequences) are available.',
+           'partial': 'Only some teaching investigations exist; use the sequence IDs present.',
+           'not_selected': 'No teaching investigations were run (not selected); teach from the refutation, better line, policies and chain.',
+           'disabled': 'Teaching investigations were disabled; teach from the refutation, better line, policies and chain.',
+           'unavailable': 'Teaching investigations are unavailable; teach from the refutation, better line, policies and chain.'}
+    return text + ' ' + inv.get(entry['investigation_status'], 'Whether teaching investigations exist was not recorded; use only the sequence IDs present.')
+
+
+def coverage_facts(parsed):
+    """{str(move_number): summary + text} for every teaching candidate (small; selection reads it too)."""
+    out = {}
+    for entry in coverage_summary(parsed):
+        entry = dict(entry); entry['text'] = coverage_text(entry)
+        out[str(entry['move_number'])] = entry
+    return out
+
+
 def build_facts(parsed, selected=None):
     if parsed.get('reading_view_only'): raise ValueError('Use complete parsed.json, not brief.json')
     gi = parsed['game_info']; student = side(gi.get('student','B'))
@@ -114,7 +183,8 @@ def build_facts(parsed, selected=None):
     facts = {'student': student,
              'actual_moves': {str(m['number']): {'color': m['color'], 'move': m['move']} for m in parsed['moves']},
              'current': {'accuracy': accuracy, 'phases': deepcopy(parsed.get('arc',{}).get('phases',[]))},
-             'history': history_facts(parsed), 'lessons': {}}
+             'history': history_facts(parsed), 'praise_facts': praise_facts(parsed), 'lessons': {},
+             'search_coverage': deepcopy(parsed.get('search_coverage')), 'coverage': coverage_facts(parsed)}
     recent = facts['history']['prior_games'][-10:]
     phase_values = {p['name']:p.get('student_mean_loss') for p in facts['current']['phases'] if 'name' in p}
     rows = []
@@ -166,6 +236,10 @@ def build_facts(parsed, selected=None):
             'coordinates': {m: coordinate(p,m) for m in (c['played_move'],c.get('preferred_move')) if m},
             'policy': policy_fact(c), 'local_trials': trials, 'groups': groups,
             'rollouts': rollouts, 'sequences': seqs,
+            'sequences_with_colours': {k: v['with_colours'] for k, v in seqs.items()},
+            'refutation_with_colours': with_colours(opponent(c.get('player', student)), c.get('refutation', []), c.get('refutation_with_colours')),
+            'better_line_with_colours': with_colours(c.get('player', student), c.get('better_line', []), c.get('better_line_with_colours')),
+            'coverage': facts['coverage'].get(str(n)),
             'ownership_limit': 'Ownership forecasts and nearby moves do not prove a local killing move, unconditional life/death, or sente.'}
     return facts
 

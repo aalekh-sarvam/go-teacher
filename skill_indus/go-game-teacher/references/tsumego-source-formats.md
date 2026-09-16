@@ -225,3 +225,108 @@ hard rules:
 For shapes and teaching prose around the position, Sensei's Library and Go
 Magic remain the right references (step 4) — just do not try to transcribe
 coordinates from Sensei's image diagrams.
+
+## SGF problems
+
+For sources that ship solution trees as SGF (gogameguru/go-problems, tasuki2sgf
+collections, exports from OGS/GoGui/Sabaki), use `scripts/parse_sgf_problem.py`
+instead of hand-reading the file:
+
+```bash
+python <sandbox_dir>/scripts/parse_sgf_problem.py problem.sgf -o puzzle.json
+python <sandbox_dir>/scripts/parse_sgf_problem.py collection.sgf --index 3 -o puzzle.json   # 0-based game index
+python <sandbox_dir>/scripts/parse_sgf_problem.py collection.sgf --all -o all.json          # list, same shape as parse_tasuki_tex.py
+```
+
+It emits the same dict as `parse_tasuki_tex.py` (`title`, `player_to_move`,
+`black`/`white` GTP lists, `sgf_black`/`sgf_white`, `labels`, `source`) plus
+the solution fields the puzzle schema wants, so `solve_tsumego.py --json` can
+consume the `--all` output directly.
+
+| SGF | Output field | Notes |
+|---|---|---|
+| `SZ[n]` / `SZ[w:h]` | `board_size` (+ `board_size_y` if not square) | default 19, or `--size` |
+| `AB[..]` / `AW[..]` (root, or a move-less first node; `aa:cc` compression and `AE` handled) | `black`, `white`, `sgf_black`, `sgf_white`, `source.position.{black_stones,white_stones}` | GTP columns skip **I**; SGF row `a` is the TOP, so `da` on 19x19 = `D19`, on 9x9 `ai` = `A1` |
+| `PL[B/W]`, else colour of the first move, else B | `player_to_move` | a warning is recorded when defaulted |
+| root `C[..]` | `description` | |
+| `GN` / `EV` | `title` | else `problem <index+1>` |
+| `LB[pt:text]` | `labels` | |
+| variations | `correct_moves`, `correct_lines`, `wrong_moves[{move, refutation, explanation}]` | see classification below |
+| file path + game index | `source.file`, `source.problem`, `source.example_locator` = `"<path> problem <n>"` | rewrite the locator to the publisher's own numbering before citing |
+| `tt` or `[]` move | `"pass"` in a line | `go_rules.Position.play` accepts `pass` |
+
+Classification: every leaf path is read from the *last node's comment*. A
+WRONG marker (`wrong`, `incorrect`, `fail…`, `bad`, `✗`, `not correct`) wins over
+a CORRECT marker (`correct`, `right`, `✓`, `RIGHT`, `success`, `solution`), so
+"incorrect" is never read as correct. A first move is correct when at least one
+leaf below it is correct; `correct_lines[move]` is the longest correct path; any
+other first move becomes a `wrong_move` whose `refutation` is the longest
+continuation and whose `explanation` is that leaf's comment. If **no** leaf in
+the tree carries a marker, the first child at the first real branch point is
+assumed correct and a warning is recorded — check it by hand, some collections
+put the solution last.
+
+Caveats:
+
+- The parser records `warnings` for non-alternating colours (a variation that
+  shows "if the opponent tenukis") — `go_rules` cannot replay those lines, so
+  drop or split them before `check_puzzle`.
+- Comments are free text: a comment like "correct shape but wrong timing" is
+  classified wrong. Read the leaf comments in the output before trusting labels.
+- The output is a **source position**, not a puzzle. `check_puzzle` will (and
+  should) still reject it: it needs `transformation`, `objective`,
+  `solution_review`, `board_checks`, and the transformed board must be
+  re-verified with `solve_tsumego.py` / `verify_puzzle_engine.py`. The SGF
+  author's variations are a hint for the objective, not a proof.
+- gogameguru problems are CC BY-NC-SA 4.0: keep `source.url` pointing at the
+  problem page and credit An Younggil / Go Game Guru.
+
+## OGS puzzles
+
+`scripts/parse_ogs_puzzle.py` converts a puzzle from online-go.com's public API
+(`https://online-go.com/api/v1/puzzles/<id>`), either fetched by id or from a
+saved JSON file (tests use files only; nothing else in the skill hits the
+network without being asked):
+
+```bash
+python <sandbox_dir>/scripts/parse_ogs_puzzle.py 45 -o puzzle.json               # fetches the id
+python <sandbox_dir>/scripts/parse_ogs_puzzle.py saved_puzzle_45.json -o puzzle.json
+```
+
+Verified API shape (puzzle 45): top-level `id`, `name`, `collection{id,name}`,
+`owner{username}`, `private`, `rating`, `type`; and `puzzle{puzzle_rank
+(string), puzzle_type, width, height, initial_state{black,white},
+initial_player, puzzle_description, move_tree}`. `initial_state.black` is a
+single string of letter pairs, two letters per stone, `a` = 0, **x then y, y
+counted from the top** (`"daaa"` = D19 and A19 on 19x19). `move_tree` is a
+root `{x:-1,y:-1}` with `branches:[{x, y, correct_answer?, wrong_answer?,
+text?, branches:[…]}]`; `x = -1` inside the tree is a pass.
+
+| OGS | Output field |
+|---|---|
+| `width`, `height` | `board_size` (+ `board_size_y`) |
+| `initial_state.black/white` | `black`, `white` (GTP, no I), `sgf_*`, `source.position` |
+| `initial_player` | `player_to_move` |
+| `puzzle_description` | `description`; `name` → `title` |
+| first-ply branch flagged `correct_answer`, or with a `correct_answer` node below it | `correct_moves`; `correct_lines[move]` = deepest such path |
+| every other first-ply branch | `wrong_moves[{move, refutation = deepest continuation, explanation = branch/leaf text}]` |
+| `puzzle_rank` | `rank_hint{puzzle_rank, note, tentative_label}` |
+| `id`, `name`, `owner`, `collection`, `private`, `rating`, `type`, `puzzle_type` | `source.url` (API URL), `source.web_url`, `source.example_locator` = `"OGS puzzle <id> (<name>)"`, `source.owner`, `source.collection_id`, … , `source.credit` |
+
+Caveats:
+
+- **Rank semantics are unconfirmed.** `puzzle_rank` is a string; `"0"` appears
+  to mean unranked. The `tentative_label` assumes OGS's internal rank numbering
+  (r < 30 → (30−r) kyu, r ≥ 30 → (r−29) dan) — treat it as a hint only, never
+  as a rating claim in a lesson. `rating` is the community star rating, not a
+  difficulty.
+- **Credit.** OGS puzzles are user-contributed; the CLI prints a reminder to
+  stderr and the output carries `source.credit` (owner + OGS). Check the
+  collection's terms before reusing a puzzle, and respect `private: true`.
+- Unflagged leaves count as wrong (that is how the OGS client treats moves
+  that do not reach a `correct_answer`), and a branch carrying both flags is
+  reported in `warnings`. Puzzles whose tree has no `correct_answer` at all
+  yield an empty `correct_moves` plus a warning.
+- As with SGF problems, the result is a source position only: transform,
+  verify the *transformed* board mechanically, fill `objective`,
+  `solution_review`, `board_checks`, then run `check_puzzle`.

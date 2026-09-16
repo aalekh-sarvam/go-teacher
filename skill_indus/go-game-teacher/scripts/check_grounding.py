@@ -1,11 +1,58 @@
 """Check explicit draft claims and puzzle board assertions; prose semantics still need review."""
+import re
 from teaching_facts import build_facts, pointer, expand_facts, group_fact
 from go_rules import Position
 from puzzle_reading import check_capture_choice
 
 
-def check_grounding(parsed, authored):
+_STONES=re.compile(r'(\d+)\s+(?:more\s+)?stones?\b',re.I)
+_POINTS=re.compile(r'(\d+(?:\.\d+)?)\s*(?:points?|pts)\b',re.I)
+_PERCENT=re.compile(r'(\d+(?:\.\d+)?)\s*%')
+
+
+def _near(value, allowed):
+    return any(abs(value-a) < 0.051 for a in allowed)
+
+
+def check_praise_numbers(parsed, authored):
+    """Numbers quoted in a good_moves explanation must come from the report's praise entry or moves
+    row for that move: stone counts, point gaps and percentages. Only runs where a praise entry exists."""
     errors=[]
+    praise={p.get('move_number',p.get('number')):p for p in parsed.get('teaching',{}).get('praise',[]) or []}
+    rows={m['number']:m for m in parsed.get('moves',[])}
+    for i,gm in enumerate(authored.get('good_moves',[])):
+        if not isinstance(gm,dict): continue
+        n=gm.get('move_number'); p=praise.get(n)
+        text=gm.get('explanation')
+        if p is None or not isinstance(text,str): continue
+        row=rows.get(n,{})
+        stones={v for v in (p.get('stones_captured'),row.get('stones_captured')) if isinstance(v,(int,float))}
+        gap=p.get('gap',p.get('gap_points'))
+        points={v for v in (gap,row.get('point_loss'),row.get('score_black')) if isinstance(v,(int,float))}
+        points|={abs(v) for v in points}
+        percents=set()
+        for v in (p.get('human_prob'),p.get('winrate_before')):
+            if isinstance(v,(int,float)): percents.add(v*100)
+        for v in (p.get('winrate_before'),):
+            if isinstance(v,str) and v.endswith('%'):
+                try: percents.add(float(v[:-1]))
+                except ValueError: pass
+        tag=f'praise {i+1} (move {n})'
+        for m in _STONES.finditer(text):
+            v=float(m[1])
+            if not stones or not _near(v,stones): errors.append(f'{tag}: "{m[0]}" does not match stones_captured {sorted(stones) or "unknown"}')
+        for m in _POINTS.finditer(text):
+            v=float(m[1])
+            if not _near(v,points): errors.append(f'{tag}: "{m[0]}" is not the report\'s gap ({gap!r}) or this row\'s point_loss')
+        for m in _PERCENT.finditer(text):
+            v=float(m[1])
+            if not _near(v,percents) and not _near(v,{round(x) for x in percents}):
+                errors.append(f'{tag}: "{m[0]}" is not the report\'s human_prob or winrate_before for this move')
+    return errors
+
+
+def check_grounding(parsed, authored):
+    errors=check_praise_numbers(parsed, authored)
     if authored.get('grounding_version') != 1: return errors
     facts=build_facts(parsed); draft=expand_facts(authored,facts)
     checks=draft.get('fact_checks',[])

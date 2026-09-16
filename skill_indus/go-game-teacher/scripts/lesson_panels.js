@@ -9,6 +9,70 @@ function setPerspective(level) {
     });
     lessonControllers.forEach(c => c.perspectiveChanged());
 }
+// ===== Prose formatting (panels use the same rules as the static prose) =====
+// Escape first, then turn **pairs** into <strong>, then wrap the first glossary
+// term of the block in <abbr>. An unpaired trailing ** stays literal.
+function escapeHtml(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function boldify(escaped) {
+    const parts = escaped.split('**');
+    if (parts.length < 3) return escaped;
+    let out = '';
+    for (let i = 0; i < parts.length; i++) {
+        out += parts[i];
+        if (i === parts.length - 1) break;
+        if (i % 2 === 0) out += (i + 1 < parts.length - 1 || parts.length % 2 === 1) ? '<strong>' : '**';
+        else out += '</strong>';
+    }
+    return out;
+}
+// GLOSSARY is injected by the generator: {term: definition}. Only text outside tags is touched.
+function glossify(html) {
+    const glossary = (typeof GLOSSARY === 'object' && GLOSSARY) || {};
+    const seen = new Set();
+    return html.split(/(<[^>]+>)/).map(seg => {
+        if (seg.startsWith('<')) return seg;
+        for (const term of Object.keys(glossary)) {
+            if (seen.has(term)) continue;
+            const pattern = new RegExp('(^|[^A-Za-z])(' + term.replace(/ū/g, '[uū]') + ')(?![A-Za-z])', 'i');
+            if (pattern.test(seg)) {
+                seg = seg.replace(pattern, (m, pre, word) => pre + '<abbr title="' + escapeHtml(glossary[term]) + '">' + word + '</abbr>');
+                seen.add(term);
+            }
+        }
+        return seg;
+    }).join('');
+}
+function formatProse(text) {
+    return String(text || '').split(/\n\s*\n/).map(p => p.trim()).filter(Boolean)
+        .map(p => '<p>' + glossify(boldify(escapeHtml(p))).replace(/\n/g, '<br>') + '</p>').join('');
+}
+
+// ===== Colour-safe sequences =====
+// Tokens like "B D7" / "W E3" / "B pass". Prefer the report's moves_with_colours;
+// otherwise alternate from first_to_move. Never print bare coordinate lists.
+function sequenceTokens(seq) {
+    if (!seq) return [];
+    const coloured = seq.moves_with_colours;
+    if (Array.isArray(coloured) && coloured.length === (seq.moves || []).length && coloured.length) return coloured.slice();
+    let colour = /^(W|White)$/i.test(seq.first_to_move || '') ? 'W' : 'B';
+    return (seq.moves || []).map(mv => { const t = colour + ' ' + mv; colour = colour === 'B' ? 'W' : 'B'; return t; });
+}
+function renderSequence(seq) { return sequenceTokens(seq).join(' → '); }
+// DOM version for the stepper: played tokens plain, the current one highlighted, the rest dimmed.
+function sequenceLine(seq, step) {
+    const wrap = document.createElement('span');
+    const tokens = sequenceTokens(seq);
+    tokens.forEach((t, k) => {
+        if (k) wrap.appendChild(document.createTextNode(' → '));
+        const s = document.createElement('span');
+        s.textContent = t;
+        s.className = k + 1 === step ? 'seq-current' : k + 1 > step ? 'seq-pending' : 'seq-played';
+        if (k + 1 === step) s.setAttribute('aria-current', 'step');
+        wrap.appendChild(s);
+    });
+    return wrap;
+}
+
 function initLesson(idx, data, allMoves) {
     const size = data.board_size || 9, prefix = data.move_number-1;
     const canvas = document.getElementById('board-'+idx);
@@ -20,11 +84,12 @@ function initLesson(idx, data, allMoves) {
     const details = document.getElementById('facts-'+idx);
     const stateEl = document.getElementById('sequence-state-'+idx);
     const range = document.getElementById('sequence-range-'+idx);
+    const seqLine = document.getElementById('sequence-line-'+idx);
     const selector = document.getElementById('branch-'+idx);
     let panel='position', step=0, current=null, timer=null;
     const score = n => typeof n === 'number' ? (n >= 0 ? 'B+' : 'W+') + Math.abs(n).toFixed(1) : 'unavailable';
     const signName = data.player_color === 'W' ? 'White' : 'Black';
-    function fallback(id,moves) { return {id,from_turn:prefix,first_to_move:data.player_color,moves:moves||[],source:'engine principal variation',stop_reason:'line end'}; }
+    function fallback(id,moves,coloured) { return {id,from_turn:prefix,first_to_move:data.player_color,moves:moves||[],moves_with_colours:coloured||undefined,source:'engine principal variation',stop_reason:'line end'}; }
     function find(id) { return sequences.find(s=>s.id===id); }
     function choices() {
         const level=lessonPerspective;
@@ -32,7 +97,7 @@ function initLesson(idx, data, allMoves) {
         if(panel==='alternatives') {
             if(level!=='engine') return [];
             const tree=sequences.filter(s=>s.id.startsWith('tree_'));
-            return tree.length?tree:(data.alternatives||[]).map(a=>fallback('alternative_'+a.move,[a.move]));
+            return tree.length?tree:(data.alternatives||[]).map(a=>fallback('alternative_'+a.move,(a.pv&&a.pv.length&&a.pv[0]===a.move)?a.pv:[a.move],(a.pv_with_colours&&a.pv_with_colours.length===(a.pv||[]).length&&a.pv[0]===a.move)?a.pv_with_colours:null));
         }
         if(panel==='local') return level==='engine' ? ((ev.local_reading||{}).trials||[]).filter(t=>t.sequence).map(t=>t.sequence) : [];
         const kind=panel==='played'?'played':'best';
@@ -41,15 +106,13 @@ function initLesson(idx, data, allMoves) {
             return picks;
         }
         let seq=find(kind+'_'+level);
-        if(!seq && level==='engine') seq=kind==='played'?fallback('played_engine',[data.played_move,...(data.refutation||[])]):fallback('best_engine',data.better_line);
+        if(!seq && level==='engine') seq=kind==='played'?fallback('played_engine',[data.played_move,...(data.refutation||[])],data.refutation_with_colours&&data.refutation_with_colours.length===(data.refutation||[]).length?[(data.player_color==='W'?'W ':'B ')+data.played_move,...data.refutation_with_colours]:null):fallback('best_engine',data.better_line,data.better_line_with_colours&&data.better_line_with_colours.length===(data.better_line||[]).length?data.better_line_with_colours:null);
         return seq ? (panel==='played'&&level!=='engine'&&find('opponent_refutation')?[seq,find('opponent_refutation')]:[seq]) : [];
     }
     function prose(text, label) {
         explain.replaceChildren();
-        if(label){const heading=document.createElement("strong");heading.textContent=label;explain.appendChild(heading);}
-        for(const paragraph of (text||'').split(/\n\s*\n/)) {
-            const p=document.createElement('p');p.textContent=paragraph;explain.appendChild(p);
-        }
+        if(label){const heading=document.createElement("strong");heading.className='prose-label';heading.textContent=label;explain.appendChild(heading);}
+        explain.insertAdjacentHTML('beforeend', formatProse(text));
     }
     function fact(text) {const p=document.createElement('p');p.textContent=text;details.appendChild(p);}
     function stop() {if(timer){clearInterval(timer);timer=null;}document.getElementById('sequence-play-'+idx).textContent='Play';}
@@ -75,13 +138,14 @@ function initLesson(idx, data, allMoves) {
         range.max=max;range.value=step;range.disabled=!max;
         for(const id of ['start','prev','play','next','end'])document.getElementById('sequence-'+id+'-'+idx).disabled=!max;
         stateEl.textContent=current ? `${step} / ${max} moves${passes.length?' · '+passes.join('; '):''}` : 'Position before move '+data.move_number;
+        if(seqLine){seqLine.replaceChildren();if(current&&max){seqLine.appendChild(sequenceLine(current,step));}else{seqLine.textContent='';}}
     }
     function activate(key,keepSelection=false) {
         stop();panel=key;step=0;
         section.querySelectorAll('[data-panel]').forEach(b=>{const active=b.dataset.panel===key;b.classList.toggle('active',active);b.setAttribute('aria-expanded',String(active));});
         const options=choices(),previous=selector.value;
         selector.replaceChildren();
-        options.forEach(s=>{const o=document.createElement('option');o.value=s.id;o.textContent=s.id.startsWith('alternative_')?s.moves[0]:s.id==='opponent_refutation'?'Most likely opponent reply':s.id.startsWith('tree_')?s.moves.slice(0,3).join(' → '):s.id.startsWith('played')?'After your move':s.id.startsWith('best')?'After the better move':s.id.replaceAll('_',' ');selector.appendChild(o);});
+        options.forEach(s=>{const o=document.createElement('option');o.value=s.id;const tokens=sequenceTokens(s);o.textContent=s.id.startsWith('alternative_')?tokens[0]:s.id==='opponent_refutation'?'Most likely opponent reply':s.id.startsWith('tree_')?tokens.slice(0,3).join(' → ')+(tokens.length>3?' → …':''):s.id.startsWith('played')?'After your move':s.id.startsWith('best')?'After the better move':s.id.replaceAll('_',' ');selector.appendChild(o);});
         if(keepSelection && options.some(s=>s.id===previous))selector.value=previous;
         selector.hidden=options.length<2;current=options.find(s=>s.id===selector.value)||options[0]||null;
         const specific = current && (data.sequence_explanations||{})[current.id];
@@ -91,6 +155,7 @@ function initLesson(idx, data, allMoves) {
         details.replaceChildren();
         if(panel!=='position'&&!current)fact('Unavailable in this perspective. '+(panel==='local'?'Local reading is a restricted engine search.':panel==='alternatives'?'These branches were evaluated by the engine; human examples are in the played and better-plan panels.':Object.values(ev.unavailable||{}).join('; ')));
         if(current){
+            fact('Sequence: '+renderSequence(current));
             fact(current.source+(current.profile?' · '+current.profile:''));
             if(current.score_black!==undefined && current.score_black!==null)fact((current.source.includes('principal')?'Search estimate: ':'Endpoint estimate: ')+score(current.score_black)+' · '+current.visits+' visits');
             if(current.stop_reason)fact('Line ends: '+current.stop_reason);
@@ -112,7 +177,7 @@ function initLesson(idx, data, allMoves) {
             fact(l.caveat||l.reason||'No local reading available.');
         }
         if(panel==='what_if')for(const c of ev.rollout_comparisons||[])if(c.level===lessonPerspective){const d=c.best_minus_played_for_student;fact(typeof d==='number' ? `This sample comparison favours the ${d>0?'better':d<0?'played':'neither'} start by ${Math.abs(d).toFixed(1)} points for ${signName}.` : 'Sample comparison unavailable.');fact(c.caveat);}
-        if(panel==='alternatives'&&current){const alt=(data.alternatives||[]).find(a=>a.move===current.moves[0]);const text=(data.alternative_explanations||{})[current.moves[0]]||(alt||{}).explanation;if(text)prose(text);if(alt&&typeof alt.loss_vs_best==='number')fact(alt.move+': '+alt.loss_vs_best.toFixed(1)+' points worse than the main search’s preferred move for '+signName+'.');}
+        if(panel==='alternatives'&&current){const alt=(data.alternatives||[]).find(a=>a.move===current.moves[0]);const text=(data.alternative_explanations||{})[current.moves[0]]||(alt||{}).explanation;if(text)prose(text);if(alt&&typeof alt.loss_vs_best==='number')fact(sequenceTokens(current)[0]+': '+alt.loss_vs_best.toFixed(1)+' points worse than the main search’s preferred move for '+signName+'.');}
         step=current ? Math.min(current.moves.length,panel==='what_if'?12:6) : 0;
         render();
     }

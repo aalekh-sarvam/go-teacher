@@ -411,9 +411,26 @@ h2 { color: #3a2a10; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1p
 .hint-box { margin-top: 10px; padding: 10px 14px; background: #fff8e0; border-radius: 6px; border: 1px dashed #c0a060; }
 footer { text-align: center; padding: 20px; color: #999; font-size: 0.85em; }
 .quality-badge { display: inline-block; color: #fff; padding: 1px 8px; border-radius: 10px; font-size: 0.8em; font-weight: 700; }
-.alt-controls { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; align-items: center; font-size: 0.85em; color: #666; }
-.alt-controls button { padding: 4px 10px; border: 2px solid #c0a060; background: #fff; border-radius: 6px; cursor: pointer; font-size: 0.85em; }
-.alt-controls button.active { background: #f0e8d0; font-weight: 600; }
+abbr[title] { text-decoration: underline dotted #8a6a2a; text-underline-offset: 3px; cursor: help; }
+.good-moves-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 12px; }
+.good-moves-grid .good-move-card { flex-direction: column; margin-bottom: 0; }
+.good-move-card canvas { width: 100%; max-width: 280px; height: auto; display: block; margin: 0 auto; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.15); }
+.praise-head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
+.praise-head h3 { margin: 0; }
+.badge-kind { background: #e3efe3; color: #2a5a2a; }
+.praise-note { color: #3a4a3a; font-style: italic; margin-bottom: 6px; }
+.praise-facts { margin: 0 0 8px 18px; font-size: 0.92em; color: #555; }
+.praise-facts li { margin-bottom: 2px; }
+.praise-rating { margin-top: 8px; font-size: 0.9em; }
+.praise-rating .rating-badge { margin-left: 0; }
+.rating-source { display: block; color: #657168; font-size: 0.85em; margin-top: 4px; }
+.sequence-line { text-align: center; font-size: 12px; color: #617062; line-height: 1.8; margin: 2px 0 6px; min-height: 20px; word-break: break-word; }
+.seq-current { background: #294c3d; color: #fff; border-radius: 4px; padding: 0 5px; font-weight: 700; }
+.seq-pending { opacity: 0.45; }
+.prose-label { display: block; margin-bottom: 6px; color: #4a5a4e; font-size: 0.85em; }
+.level-source { color: #617062; font-size: 12px; margin-top: 4px; }
+.working-rank { margin-top: 10px; color: #3a4a3a; }
+.working-rank small { display: block; color: #657168; }
 .eval-list { margin: 8px 0 0 18px; }
 .eval-list li { margin-bottom: 6px; }
 .legend-circle-yellow { border: 3px solid #d4a017; border-radius: 50%; }
@@ -463,21 +480,86 @@ def escape_html(text):
     text = text.replace('&', chr(38)+'amp;')
     text = text.replace('<', chr(38)+'lt;')
     text = text.replace('>', chr(38)+'gt;')
-    # Convert bold placeholders to <strong></strong> pairs
+    # Convert bold placeholders to <strong></strong> pairs; an unpaired
+    # trailing ** is left as literal text rather than an unclosed tag.
     if '\x00B\x00' in text:
         parts = text.split('\x00B\x00')
+        unpaired = len(parts) % 2 == 0
         result = ''
         for i, part in enumerate(parts):
             result += part
             if i < len(parts) - 1:
-                result += '<strong>' if i % 2 == 0 else '</strong>'
+                if unpaired and i == len(parts) - 2:
+                    result += '**'
+                else:
+                    result += '<strong>' if i % 2 == 0 else '</strong>'
         return result
     return text
 
 
-def format_paragraphs(text, linkify=None):
-    """Convert plain text paragraphs to HTML, optionally making move references clickable."""
-    paragraphs = text.strip().split('\n\n')
+# Jargon a beginner meets in the prose. The FIRST occurrence in each block of
+# static prose is wrapped in <abbr title="..."> (the panels do the same at
+# runtime through the injected GLOSSARY). Matching is case-insensitive and
+# tolerates the macron in kyūsho.
+GLOSSARY = {
+    'semeai': 'A capturing race: two groups that can only live by capturing each other; whoever runs out of liberties first loses.',
+    'nakade': 'A stone placed inside the opponent\'s eye space so the group cannot form two eyes.',
+    'sente': 'A move the opponent must answer, so you keep the initiative and choose the next move.',
+    'gote': 'A move that does not force an answer, so the opponent gets to choose the next move.',
+    'tenuki': 'Ignoring the local fight to play somewhere else on the board.',
+    'atari': 'A group with only one liberty left; it is captured next move unless it escapes or is defended.',
+    'ko': 'A repeating capture; the rules forbid retaking immediately, so a ko threat elsewhere must be played first.',
+    'seki': 'A standoff in which neither side can capture the other; both groups live without two eyes.',
+    'kyūsho': 'The vital point: the single move that decides the shape or the life of a group.',
+    'aji': 'Latent possibilities left in a position that may be used later.',
+    'moyo': 'A large framework of potential territory that is not yet secure.',
+    'hane': 'A diagonal move that bends around the head of the opponent\'s stone.',
+    'tesuji': 'A skilful local move that gets the most out of the stones in a fight.',
+}
+_TAG_SPLIT = re.compile(r'(<[^>]+>)')
+
+
+def _glossary_pattern(term):
+    letters = term.replace('ū', '[uū]')
+    return re.compile(r'(^|[^A-Za-z])(' + letters + r')(?![A-Za-z])', re.IGNORECASE)
+
+
+def glossify(html):
+    """Wrap the first occurrence of each glossary term in already-escaped
+    HTML with <abbr title="...">. Only text outside tags is touched."""
+    if not html:
+        return html
+    seen = set()
+    out = []
+    for seg in _TAG_SPLIT.split(html):
+        if seg.startswith('<'):
+            out.append(seg)
+            continue
+        for term, meaning in GLOSSARY.items():
+            if term in seen:
+                continue
+            pat = _glossary_pattern(term)
+            m = pat.search(seg)
+            if m:
+                title = escape_html(meaning).replace('"', '&quot;')
+                seg = seg[:m.start()] + m.group(1) + f'<abbr title="{title}">{m.group(2)}</abbr>' + seg[m.end():]
+                seen.add(term)
+        out.append(seg)
+    return ''.join(out)
+
+
+def prose_inline(text, linkify=None):
+    """Escape a single run of prose, link move references, wrap glossary terms."""
+    escaped = escape_html(str(text))
+    if linkify:
+        escaped = linkify(escaped)
+    return glossify(escaped)
+
+
+def format_paragraphs(text, linkify=None, glossary=True):
+    """Convert plain text paragraphs to HTML, optionally making move references
+    clickable. The first glossary term in the block gets an <abbr> definition."""
+    paragraphs = (text or '').strip().split('\n\n')
     html_parts = []
     for p in paragraphs:
         p = p.strip()
@@ -488,7 +570,8 @@ def format_paragraphs(text, linkify=None):
             # Convert single newlines to <br>
             escaped = escaped.replace('\n', '<br>')
             html_parts.append(f'<p>{escaped}</p>')
-    return '\n'.join(html_parts)
+    html = '\n'.join(html_parts)
+    return glossify(html) if glossary else html
 
 # Context-prose move references. 'move N' links when N exists in the game;
 # a coordinate links only when that exact point was played exactly once
@@ -533,10 +616,7 @@ def build_arc_section(game_arc, linkify=None):
         return ''
     intro_html = ''
     if game_arc.get('intro'):
-        intro = escape_html(game_arc["intro"])
-        if linkify:
-            intro = linkify(intro)
-        intro_html = f'<p class="arc-intro">{intro}</p>'
+        intro_html = f'<p class="arc-intro">{prose_inline(game_arc["intro"], linkify)}</p>'
     cards = ''
     for ph in game_arc.get('phases', []):
         name = escape_html(str(ph.get('phase', '')))
@@ -562,10 +642,7 @@ def build_arc_section(game_arc, linkify=None):
         if turning:
             items = []
             for t in turning:
-                item = escape_html(str(t))
-                if linkify:
-                    item = linkify(item)
-                items.append(f'<li>{item}</li>')
+                items.append(f'<li>{prose_inline(t, linkify)}</li>')
             tp_html = f'<ul class="turning-points">{"".join(items)}</ul>'
         cards += f'<div class="phase-card">{header}{body}{tp_html}</div>'
     return ('<section class="arc-section">'
@@ -573,16 +650,125 @@ def build_arc_section(game_arc, linkify=None):
             f'{intro_html}{cards}</section>')
 
 
-def build_progress_section(progress):
-    """'Your progress' card from lesson_data['progress'] (text + optional rows), or ''."""
-    if not progress or not (progress.get('summary') or progress.get('rows')):
+def build_working_rank_html(student_profile):
+    """'Working rank: 11k' line from student_profile.working_rank, or ''."""
+    wr = (student_profile or {}).get('working_rank') or {}
+    label = wr.get('rank_label')
+    if not label:
+        return ''
+    games = wr.get('games')
+    games_text = (f'smoothed over your last {games} analysed game{"s" if games != 1 else ""}, this one included'
+                  if isinstance(games, int) and games > 0 else 'smoothed over your recent analysed games')
+    return (f'<p class="working-rank">Working rank: <strong>{escape_html(str(label))}</strong>'
+            f'<small>Source: the report\'s human-profile estimates, {games_text}. It describes how your moves resemble human play at that rank; it is not a rating.</small></p>')
+
+
+def build_progress_section(progress, student_profile=None):
+    """'Your progress' card from lesson_data['progress'] (text + optional rows)
+    plus the working rank from the report's student_profile, or '' if neither exists."""
+    progress = progress or {}
+    working = build_working_rank_html(student_profile)
+    if not (progress.get('summary') or progress.get('rows') or working):
         return ''
     rows = ''
     for r in progress.get('rows', []):
         rows += f"<tr><td>{escape_html(str(r.get('metric', '')))}</td><td>{escape_html(str(r.get('this_game', '')))}</td><td>{escape_html(str(r.get('recent_average', '')))}</td></tr>"
     table = f'<table class="progress-table"><thead><tr><th>Metric</th><th>This game</th><th>Recent average</th></tr></thead><tbody>{rows}</tbody></table>' if rows else ''
     return ('<section class="progress"><h2>Your Progress</h2>'
-            + format_paragraphs(progress.get('summary', '')) + table + '</section>')
+            + format_paragraphs(progress.get('summary', '')) + table + working + '</section>')
+
+
+def rank_text(value):
+    """'rank_10k' -> '10k'; anything falsy -> ''."""
+    return str(value or '').replace('rank_', '')
+
+
+def level_labels(parsed_data):
+    """Perspective-bar level labels and the line that says where they came from.
+    Returns dict(student, target, wording, source). The student level is this
+    game's human-profile estimate when the report has one, else the student
+    profile the probes used; the target is always the target profile used."""
+    sp = parsed_data.get('student_profile') or {}
+    estimate = sp.get('estimate') or {}
+    profiles = sp.get('profiles_used') or parsed_data.get('profiles') or {}
+    used_student = rank_text(profiles.get('student'))
+    target = rank_text(profiles.get('target'))
+    if estimate.get('rank_label'):
+        student = str(estimate['rank_label'])
+        wording = str(estimate.get('wording') or '')
+        source = (f"Your level is this game's human-profile estimate ({student}"
+                  + (f", range {estimate['low_label']}–{estimate['high_label']}" if estimate.get('low_label') and estimate.get('high_label') else '')
+                  + ')')
+        if used_student:
+            source += f'; the human-style sequences were sampled with the {used_student} profile'
+        if target:
+            source += f' and the target level is the {target} profile'
+        source += '. It describes how your moves resemble human play, not a rating.'
+    elif used_student or target:
+        student, wording = used_student, ''
+        source = 'Levels are the human profiles used for this analysis'
+        details = [f'student {used_student}' if used_student else '', f'target {target}' if target else '']
+        source += ' (' + ', '.join(d for d in details if d) + '); no per-game level estimate was available.'
+    else:
+        student, target, wording = '', '', ''
+        source = 'No level estimate is available for this report; the level buttons follow the engine only.'
+    return {'student': student, 'target': target, 'wording': wording, 'source': source}
+
+
+def build_praise_cards(good_moves, parsed_data):
+    """'Moves You Played Well' cards. Evidence from parsed.json's praise entry
+    (kind_label, note, gap, stones_captured, rating, rating_source) overrides
+    authored values; a rating without a rating_source is dropped. Returns
+    (cards_html, js_list)."""
+    praise_by_move = {}
+    for entry in ((parsed_data.get('teaching') or {}).get('praise') or []):
+        if isinstance(entry, dict) and entry.get('move_number') is not None:
+            praise_by_move[entry['move_number']] = entry
+    colour_of = {m.get('number'): m.get('color') for m in parsed_data.get('moves', [])}
+    board_size = parsed_data.get('game_info', {}).get('board_size', 9)
+    cards, js_list = [], []
+    for i, gm in enumerate(good_moves or []):
+        merged = dict(gm)
+        entry = praise_by_move.get(gm.get('move_number'))
+        if entry and entry.get('mv') in (None, gm.get('move')):
+            for key in ('kind_label', 'note', 'gap', 'stones_captured', 'rating', 'rating_source', 'human_prob'):
+                if entry.get(key) not in (None, ''):
+                    merged[key] = entry[key]
+        if merged.get('rating') and not merged.get('rating_source'):
+            merged.pop('rating')
+        js_list.append({'move_number': gm['move_number'], 'move': gm['move'], 'board_size': board_size})
+        colour = colour_of.get(gm.get('move_number')) or gm.get('player') or ''
+        token = (colour + ' ' if colour in ('B', 'W') else '') + str(gm['move'])
+        kind = (f'<span class="badge badge-kind">{escape_html(str(merged["kind_label"]))}</span>'
+                if merged.get('kind_label') else '')
+        note = f'<p class="praise-note">{prose_inline(merged["note"])}</p>' if merged.get('note') else ''
+        facts = []
+        captured = merged.get('stones_captured')
+        if isinstance(captured, (int, float)) and captured > 0:
+            n = int(captured)
+            facts.append(f'Captured {n} stone{"s" if n != 1 else ""}')
+        gap = merged.get('gap')
+        if isinstance(gap, (int, float)) and not isinstance(gap, bool) and gap > 0:
+            facts.append(f'{gap:.1f} points better than the next searched move')
+        facts_html = ('<ul class="praise-facts">' + ''.join(f'<li>{escape_html(f)}</li>' for f in facts) + '</ul>') if facts else ''
+        rating_html = ''
+        if merged.get('rating') and merged.get('rating_source'):
+            rating_html = (f'<p class="praise-rating"><span class="rating-badge">{escape_html(str(merged["rating"]))}</span>'
+                           f'<span class="rating-source">Source: {escape_html(str(merged["rating_source"]))}</span></p>')
+        cards.append(f'''
+<article class="good-move-card">
+  <div class="board-container">
+    <canvas id="gboard-{i}" width="280" height="280"></canvas>
+  </div>
+  <div class="move-info">
+    <div class="praise-head"><h3>Move {gm['move_number']}: {escape_html(token)}</h3>{kind}</div>
+    {note}
+    {facts_html}
+    {format_paragraphs(gm.get('explanation', ''))}
+    {rating_html}
+  </div>
+</article>''')
+    return ''.join(cards), js_list
 
 
 def build_story_html(lesson):
@@ -620,7 +806,6 @@ def generate_html(parsed_data, lesson_data):
         move_detail = parsed_data.get('move_details', {}).get(str(move_num), {})
 
         player_color = color_for(lesson)
-        alternatives = lesson.get('alternatives', [])
         story_html = build_story_html(lesson)
 
         winrate_info = ''
@@ -637,13 +822,6 @@ def generate_html(parsed_data, lesson_data):
         elif 'score_before' in move_detail:
             score_info = f'<span class="move-ref">Score: {move_detail["score_before"]} → {move_detail["score_after"]}</span>'
 
-        alt_buttons = ''
-        if alternatives:
-            alt_buttons = '<div class="alt-controls"><span>Other moves you might consider:</span>' + ''.join(
-                f'<button id="btn-alt-{i}-{k}">{escape_html(a["move"])}'
-                + (f' ({a["loss_vs_best"]:+.1f})'.replace('+', '-') if isinstance(a.get('loss_vs_best'), (int, float)) and a['loss_vs_best'] >= 0.05 else '')
-                + '</button>'
-                for k, a in enumerate(alternatives)) + '</div>'
         section = f'''
 <section class="lesson" id="lesson-{i}">
   <h2>Lesson {i+1}: {escape_html(lesson['title'])}</h2>
@@ -667,6 +845,7 @@ def generate_html(parsed_data, lesson_data):
       </div>
       <input class="sequence-range" id="sequence-range-{i}" type="range" min="0" max="0" value="0" aria-label="Move in selected sequence">
       <p id="sequence-state-{i}" class="sequence-state" aria-live="polite"></p>
+      <p id="sequence-line-{i}" class="sequence-line" aria-label="Moves in the selected sequence, colour first"></p>
       <div class="board-legend">
         <span class="legend-item"><span class="legend-swatch legend-square"></span> Opponent's last move</span>
         <span class="legend-item"><span class="legend-swatch legend-circle-red"></span> Your move</span>
@@ -677,61 +856,41 @@ def generate_html(parsed_data, lesson_data):
     <div class="lesson-side">
       {story_html}
       <div class="evidence-panels" aria-label="Explore this lesson">
-        <button data-panel="position" aria-expanded="true"><strong>The position</strong><span>What needs attention?</span></button>
-        <button data-panel="played" aria-expanded="false"><strong>Your move</strong><span>Follow what it allows</span></button>
-        <button data-panel="best" aria-expanded="false"><strong>A better plan</strong><span>See how the idea works</span></button>
-        <button data-panel="alternatives" aria-expanded="false"><strong>Other choices</strong><span>Compare evaluated branches</span></button>
-        <button data-panel="local" aria-expanded="false"><strong>Read the local fight</strong><span>Explore the restricted search</span></button>
-        <button data-panel="what_if" aria-expanded="false"><strong>What happens next?</strong><span>Follow a longer example</span></button>
+        <button data-panel="position" aria-expanded="true"><strong>Position</strong><span>The board just before your move, and what needed attention</span></button>
+        <button data-panel="played" aria-expanded="false"><strong>Your move and what it allowed</strong><span>The move you played, then the opponent's strongest replies</span></button>
+        <button data-panel="best" aria-expanded="false"><strong>A better plan</strong><span>The move the engine preferred and how the play continues</span></button>
+        <button data-panel="alternatives" aria-expanded="false"><strong>Other choices, graded</strong><span>Other moves you might have picked, with the points each one loses</span></button>
+        <button data-panel="local" aria-expanded="false"><strong>Read the local fight</strong><span>A search limited to the stones in this fight: who wins the race</span></button>
+        <button data-panel="what_if" aria-expanded="false"><strong>What would likely happen next</strong><span>Longer example continuations after your move and after the better one</span></button>
       </div>
       <select class="branch-choice" id="branch-{i}" aria-label="Variation branch" hidden></select>
       <div class="explanation" id="explanation-{i}">
-        <p class="hint-text">Click "Show played move" to see what you played, or "Show better move" to see KataGo's recommendation.</p>
+        <p class="hint-text">Start with the position on the board, then choose a panel above to follow what your move allowed or to see a better plan.</p>
       </div>
       <div class="evidence-facts" id="facts-{i}"></div>
       {('<div class="level-framing"><span class="story-label">At your level</span>' + format_paragraphs(lesson['level_framing']) + '</div>') if lesson.get('level_framing') else ''}
       <div class="principle">
-        <strong>Key principle:</strong> {escape_html(lesson['principle'])}
+        <strong>Key principle:</strong> {prose_inline(lesson['principle'])}
       </div>
     </div>
   </div>
 </section>'''
         lesson_sections.append(section)
 
-    # Build good moves section
-    good_moves_html = ''
-    good_moves_js_list = []
-    for i, gm in enumerate(lesson_data.get('good_moves', [])):
-        gm_board_size = gi.get('board_size', 9)
-        good_moves_js_list.append({
-            'move_number': gm['move_number'],
-            'move': gm['move'],
-            'board_size': gm_board_size,
-        })
-        rating = (' <span class="rating-badge">' + escape_html(gm['rating']) + '</span>') if gm.get('rating') and gm.get('rating_source') else ''
-        gm_card = f'''
-<div class="good-move-card">
-  <div class="board-container">
-    <canvas id="gboard-{i}" width="280" height="280"></canvas>
-  </div>
-  <div class="move-info">
-    <h3>Move {gm['move_number']}: {escape_html(gm['move'])} {rating}</h3>
-    <p>{escape_html(gm['explanation'])}</p>
-  </div>
-</div>'''
-        good_moves_html += gm_card
+    # Build good moves section (praise cards, evidence hydrated from parsed praise)
+    good_moves_html, good_moves_js_list = build_praise_cards(lesson_data.get('good_moves', []), parsed_data)
 
     good_moves_section = ''
     if good_moves_html:
         good_moves_section = f'''
 <section class="good-moves">
   <h2>Moves You Played Well</h2>
-  <p style="margin-bottom:16px;color:#666;">Here are choices worth repeating, with the evidence for what you did well.</p>
+  <p style="margin-bottom:16px;color:#666;">Here are choices worth repeating, with the evidence for what you did well. The badge on each card says why the move is praised; a level badge appears only when the report states its source.</p>
   <div class="board-legend">
     <span class="legend-item"><span class="legend-swatch legend-square"></span> Opponent's last move</span>
     <span class="legend-item"><span class="legend-swatch legend-circle-green"></span> Your good move</span>
   </div>
-  {good_moves_html}
+  <div class="good-moves-grid">{good_moves_html}</div>
 </section>'''
 
     # Build puzzle sections
@@ -808,7 +967,12 @@ def generate_html(parsed_data, lesson_data):
   {concepts_html}
 </section>'''
 
-    # Build JS data
+    # Build JS data. Coloured lines come straight from the report's candidate
+    # so the panels never have to print bare coordinates.
+    candidates_by_move = {c.get('move_number'): c for c in (parsed_data.get('teaching') or {}).get('candidates', []) if isinstance(c, dict)}
+    def coloured(l, key):
+        c = candidates_by_move.get(l['move_number']) or {}
+        return c.get(key) or []
     lessons_js = json.dumps([
         {
             'move_number': l['move_number'],
@@ -823,6 +987,8 @@ def generate_html(parsed_data, lesson_data):
             'refutation': l.get('refutation', []),
             'refutation_explanation': l.get('refutation_explanation', ''),
             'better_line': l.get('better_line', []),
+            'refutation_with_colours': coloured(l, 'refutation_with_colours'),
+            'better_line_with_colours': coloured(l, 'better_line_with_colours'),
             'evidence': l.get('_evidence', {}),
             'difficulty': l.get('_difficulty', {}),
             'panels': l.get('panels', {}),
@@ -834,6 +1000,8 @@ def generate_html(parsed_data, lesson_data):
                     'loss_vs_best': a.get('loss_vs_best'),
                     'quality': a.get('quality'),
                     'explanation': a.get('explanation', ''),
+                    'pv': a.get('pv', []),
+                    'pv_with_colours': a.get('pv_with_colours', []),
                 }
                 for a in l.get('alternatives', [])
             ],
@@ -848,6 +1016,7 @@ def generate_html(parsed_data, lesson_data):
     puzzles_js = puzzles_js.replace("<", "\\u003c")
     good_moves_js = good_moves_js.replace("<", "\\u003c")
     moves_js = moves_js.replace("<", "\\u003c")
+    glossary_js = json.dumps(GLOSSARY, ensure_ascii=False).replace("<", "\\u003c")
 
     # Overall feedback + arc prose may cite moves; those citations become
     # board jumps on the context board (only moves that exist in the record).
@@ -857,7 +1026,10 @@ def generate_html(parsed_data, lesson_data):
 
     # Game arc (phase-by-phase narrative) — skipped if absent
     arc_section = build_arc_section(lesson_data.get('game_arc'), linkify)
-    progress_section = build_progress_section(lesson_data.get('progress'))
+    progress_section = build_progress_section(lesson_data.get('progress'), parsed_data.get('student_profile'))
+    levels = level_labels(parsed_data)
+    level_wording_html = (f'<p class="level-source level-wording">{escape_html(levels["wording"])}</p>' if levels['wording'] else '')
+    level_source_html = f'<p class="level-source">{escape_html(levels["source"])}</p>'
 
     # Context board: pinned beside the overview and arc while those sections
     # scroll, naturally scrolling away before 'Your Progress' and the lessons.
@@ -933,11 +1105,11 @@ button:focus-visible,select:focus-visible {{ outline:3px solid #ba8c36;outline-o
 </details>
 
 <section class="perspective-bar" aria-label="Lesson perspective">
-  <div><strong>Explore the sequences</strong><p>Choose whose choices you want to follow.</p></div>
+  <div><strong>Explore the sequences</strong><p>Choose whose choices you want to follow.</p>{level_wording_html}{level_source_html}</div>
   <div class="perspective-options">
     <button data-perspective="engine" aria-pressed="true" class="active" onclick="setPerspective('engine')">Engine</button>
-    <button data-perspective="student" aria-pressed="false" onclick="setPerspective('student')">Your level{(' · ' + escape_html(str(parsed_data.get('profiles',{}).get('student') or '').replace('rank_',''))) if parsed_data.get('profiles',{}).get('student') else ''}</button>
-    <button data-perspective="target" aria-pressed="false" onclick="setPerspective('target')">Target level{(' · ' + escape_html(str(parsed_data.get('profiles',{}).get('target') or '').replace('rank_',''))) if parsed_data.get('profiles',{}).get('target') else ''}</button>
+    <button data-perspective="student" aria-pressed="false" onclick="setPerspective('student')">Your level{(' · ' + escape_html(levels['student'])) if levels['student'] else ''}</button>
+    <button data-perspective="target" aria-pressed="false" onclick="setPerspective('target')">Target level{(' · ' + escape_html(levels['target'])) if levels['target'] else ''}</button>
   </div>
 </section>
 
@@ -962,6 +1134,7 @@ const lessonData = {lessons_js};
 const puzzleData = {puzzles_js};
 const goodMoveData = {good_moves_js};
 const contextData = {context_js};
+const GLOSSARY = {glossary_js};
 
 window.onload = function() {{
   for (let i = 0; i < lessonData.length; i++) {{

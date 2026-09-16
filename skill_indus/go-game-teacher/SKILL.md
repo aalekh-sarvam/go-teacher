@@ -1,25 +1,38 @@
 ---
 name: go-game-teacher
-description: "Transforms go_teacher/KataGo game review markdown into interactive HTML lessons for beginners. Use this skill whenever a user uploads a Go game review, analysis, or KataGo/KaTrain/go_teacher markdown and wants to learn from their mistakes. Triggers on phrases like 'analyse this Go game', 'review my Go game', 'help me improve at Go', or any mention of KataGo/KaTrain game reviews. Produces a self-contained HTML file with clickable board positions, graded explanations of the played move and its alternatives, practice puzzles that test the same concepts in fresh, non-obvious positions, and a phase-by-phase narrative of how the game developed (opening, middle game, endgame) that traces the cause-and-effect chains around each teaching moment, grounded in sequential web research with a focus on Go Magic tutorials."
+description: "Transforms go_teacher/KataGo game review markdown into interactive HTML lessons for beginners. Use this skill whenever a user uploads a Go game review, analysis, or KataGo/KaTrain/go_teacher markdown and wants to learn from their mistakes. Triggers on phrases like 'analyse this Go game', 'review my Go game', 'help me improve at Go', or any mention of KataGo/KaTrain game reviews. Produces a self-contained HTML file with clickable board positions, explanations of the played move and the better plan, grounded praise for moves played well, practice puzzles from researched external examples at the student's level, and a phase-by-phase narrative of the game, grounded in web research with a focus on Go Magic tutorials."
 allowed-tools: execute_code terminal read_file write_file workspace_output workspace_emit present_output web_search web_get_contents
 ---
 
 # Go Game Teacher
 
-Turn a go_teacher review markdown into an interactive HTML lesson that teaches a beginner what they got wrong, shows how good or bad each alternative was, and lets them practise the same idea on fresh puzzles. Alongside the tactics, it tells the story of how the game unfolded — how each teaching moment arose and what it led to — so the student sees the game as an arc, not a list of disconnected snapshots.
+Turn a go_teacher review markdown into an interactive HTML lesson that tells the student what
+level they played like, what they got wrong and why, what they did well, and lets them practise
+the same idea on fresh puzzles at their level. The game overview and phase arc give context; the
+2–3 teaching moments get most of the attention. Never repeat one takeaway in the overview, a phase
+and a lesson.
 
-The main purpose is to isolate mistakes and teach better choices through replies, alternatives and practice. Keep the existing lesson sections, interactive panels, praise and puzzles. The game overview supplies context: choose a few supported strategic observations, then give most of the attention to the teaching moments. Do not turn the full move list into a move-by-move narration or repeat the same takeaway in the overview, each phase and each lesson.
+The main `.md` report is the **only game input**. Do not ask for the app's `.json` or the SGF.
+`parsed.json`, `brief.json`, `facts.json`, slices and parts are working files this skill creates.
+Every board fact comes from the report's evidence block; every number you write is copied from a
+field, never computed or remembered.
 
-The main `.md` report is the **only game input**. Do not ask for the app's separate `.json` or the original SGF. The `parsed.json` and `brief.json` used below are created by this skill from the Markdown, not additional user uploads. Every board fact must come from the report: format 5's structured evidence block, or the teaching candidates, arc facts, diagrams, candidate tables, stone lists and move list in older reports.
-
-The report carries a `Report format: N` line. The parser refuses formats it does not understand; if that happens, tell the user the skill and go_teacher are out of step rather than guessing at the layout.
+The parser accepts report format 5 with `evidence_version` 1 or 2 (version 2 adds
+`student_profile`, praise kinds, `*_with_colours`, `stones_captured` and, in newer reports, the
+search-coverage fields `search_coverage`, `evaluation_coverage`, `investigation_coverage`; see
+`references/evidence-format5.md`). If it refuses the file, tell the user the skill and go_teacher
+are out of step; do not guess. Formats 2–4 are legacy (`references/katago-review-format.md`).
 
 ## What you need
 
-- **Input**: one markdown file produced by go_teacher (KataGo analysis). See `references/katago-review-format.md`.
-- **Output**: one self-contained HTML file with interactive Go boards, explanations and puzzles.
+- **Input**: one markdown file produced by go_teacher. **Output**: one self-contained HTML file.
+- **Read first**: `references/evidence-format5.md` (data contract, schema 2),
+  `references/grounding-and-practice.md` (facts, fact_checks, puzzle verification),
+  `references/level-ladder.md` (rank bands, puzzle tiers, prose register).
 
 ## Workflow
+
+Steps 1–4 are decisions; 5–11 are authoring; 12–13 are checks and output. Keep the order.
 
 ### 1. Parse the review
 
@@ -27,161 +40,204 @@ The report carries a `Report format: N` line. The parser refuses formats it does
 python <sandbox_dir>/scripts/parse_review.py <input.md> <parsed.json> --brief-output <brief.json> --facts-output <facts.json>
 ```
 
-**Format 5:** also read [references/grounding-and-practice.md](references/grounding-and-practice.md) for the derived fact sheet, draft claim checks and verified transfer puzzles. New lessons set `grounding_version: 1`. First read [references/evidence-format5.md](references/evidence-format5.md). It defines the new evidence contract, which computations to use in lessons and practice, their limits, and lesson schema 2. Read brief.json to choose moments and inspect the compact game timeline and summaries, then the complete selected evidence in parsed.json to explain exact lines. New format-5 reports add point loss and score to every move; older format-5 reports may lack those optional fields. Always generate from parsed.json. Write prose and move references; the generator loads numbers, boards and sequences directly. The report includes setup stones and White-to-play positions. Large heatmap arrays are not in the Markdown.
+Read brief.json to choose moments, parsed.json for their complete evidence; always pass
+parsed.json to validation and generation. After choosing moments, rebuild a small facts file:
+`python scripts/teaching_facts.py parsed.json facts.json --moves 19 29` (or `parse_review.py …
+--moves 19 29`). For a team run, slice with `scripts/slice_for_agent.py` (see "Run as a team").
 
-**Formats 2–4:** the following legacy parsing details apply.
+### 2. Identify the student
 
-The default output is *brief*: game info, summary statistics, the **teaching candidates** with their board facts, refutation lines, chains and stone lists, the **arc facts** (per-phase numbers and life-and-death changes), praised moves, the compact move list, and scalar facts for every move. Candidate tables and diagrams are kept only for teaching candidates and praised moves. This is the file to read.
+Read `game_info.student` (`"B"`/`"W"`) and `game_info.student_reason`. Write "The student is
+<Black/White> because <reason>" and use it in the overview. Every lesson, praised move and
+statistic refers to that side. Never assume Black.
 
-`game_info.two_pass` tells you whether key positions were re-analysed deeply; `move_details[n].deep` marks those moves. Prefer the deeper search for the same position, but keep its provenance and uncertainty; additional visits are not a correctness guarantee.
+### 3. Read the student profile and state the level
 
-Format 4 adds four optional blocks the parser exposes when present: `openings` (how each corner was played, with KataGo's first deviation), `history` (this game against the student's earlier games), `time_and_loss` plus per-move `time_spent_seconds` (when the record has clocks), and the target-profile human policy (`target_policy` on candidates, `target_policy_*` on moves).
+Read `student_profile`. Copy `estimate.wording` ("plays like a 12k in this game (range 15k–10k,
+33 moves)") and `caveat`. Working rank: `working_rank.rank_label`, else `estimate.rank_label`,
+else `profiles_used.student` with its `student_source`; look up the band in
+`references/level-ladder.md`. The overview states the level once, as "plays like …", with the
+caveat; never "you are a 12k". Without `student_profile` (version 1), use the upload profile and say so.
 
-For formats 2–4, add `--full` to `parse_review.py` only if you need the candidate table or diagram of a move outside the shortlist (for example an opponent blunder you want to mention). Do not read the whole Markdown into context; search for `### Move N:`. Format 5 always parses the complete evidence block; use its optional brief reading view to choose moments.
+### 4. Choose 2–3 teaching moments with the ladder
 
-### 1a. Validate before generating
+Start from `teaching.candidates` (already ranked by point loss, repeats removed). Apply the
+selection rules in `references/level-ladder.md`: concept band at or one above the working rank;
+prefer the weakest phase (highest student mean loss in `arc.phases`); then point loss; distinct
+`theme` values; prefer a non-empty `refutation_with_colours`. A candidate two bands above the
+rank becomes one "later" sentence in the overview, not a lesson. Use the candidate's `theme` as
+the lesson theme; override only with a stated reason. Fall back to `summary.biggest_mistakes`
+filtered by player only if fewer than two candidates exist.
+
+Candidate fields you will quote: `point_loss`, `loss_region`, `captured_at`, hints,
+`human_policy` / `target_policy`, `refutation_with_colours`, `better_line_with_colours`,
+`status_changes`, `chain_before` / `chain_after`, `difficulty`, `evaluation_coverage`,
+`investigation_coverage`, `unavailable` (fewer panels).
+
+Coverage (`facts.coverage[N]`, one line per candidate): when `evaluation_coverage.status` is
+known, prefer candidates with `complete` for the primary lessons. A `complete` candidate whose
+`investigation_coverage.status` is `not_selected` (or whose `evidence.unavailable` has
+`teaching_investigations`, legacy `deeper_search`) is fully teachable from `refutation_with_colours`,
+`better_line_with_colours`, the policies and the chain — just without `local` / `what_if`
+panels. Say "verified" or "deep evaluation" only for a `complete` candidate; an `incomplete` or
+`unknown` one (any older report) gets neither word. Never write a human reply, restricted reading
+or what-if line that is not in the candidate's `evidence.sequences`. The learner does not get a
+coverage section; the validator checks these claims.
+
+### 5. Trace the arc
+
+Use `references/game-arc-commentary.md`. `arc.phases` gives ranges, scores, mean loss and hot
+regions; `arc.status_changes` and `moves[].stones_captured` give captures. Around each chosen
+move, trace backward through `chain_before` and forward through `chain_after`, `captured_at` and
+the refutation; connect only chain and status entries. Phase labels are move-count heuristics;
+never say the game was decided from a saturated winrate.
+
+### 6. Research (uncapped, Go Magic first)
+
+For each moment: the concept row in `references/level-ladder.md` names the Go Magic resource
+(URLs only from the verified library in `references/game-arc-commentary.md`), the Sensei's
+Library page and the puzzle tier. Then run the sequential searches in game-arc-commentary.md
+(phase, chain, pattern name, classic example). Read results in full; distil 2–3 bullets per
+moment. No search-count, source-count or time cap. Exact puzzle positions come only from the
+machine-readable sources in `references/tsumego-source-formats.md` and level-ladder.md table 2
+(`parse_tasuki_tex.py`, `parse_sgf_problem.py`, `parse_ogs_puzzle.py`), never from images.
+
+### 7. Write each lesson (schema 2)
+
+Write prose; the generator loads numbers, boards and sequences from parsed.json. Per lesson:
+
+- `move_number`, `title`, `concept_label`, `theme` (copied), `story` (2–4 sentences from the
+  chain and status facts, with move numbers), `principle` (one habit sentence).
+- `panels.position`: what to notice before moving.
+- `panels.played`: what the move allows. Walk `refutation_with_colours` (or the played
+  sequence's `moves_with_colours`) by **copying the tokens in order**: "White plays W F3, Black
+  answers B D7, then W H8". Never alternate colours yourself; never list bare coordinates.
+- `panels.best`: walk `better_line_with_colours` the same way and say why the plan works.
+- `panels.alternatives`: compare `move_details[N].candidates` by `loss_vs_best`; a 1-visit move
+  is "barely searched", not a precise number.
+- `panels.local`, `panels.what_if` (optional): restricted reading with the defender named and
+  "prediction, not proof"; sampled futures with the later-choices caveat. Omit if ungrounded or
+  when `investigation_coverage.status` is `not_selected` / `disabled` / `unavailable`.
+- `level_framing`: from `facts.lessons[N].policy` — the student profile's probability for the
+  played move and the target profile's for the preferred move, each bound to its move, direction
+  checked ("the 12k profile gives F1 about 1 in 1000; the 8k profile prefers H4 at 78%").
+- `fact_checks`: one per number, colour, defender, location or status you assert (format in
+  grounding-and-practice.md). At least one per lesson.
+- Optional `sequence_explanations` (by sequence id); `alternative_explanations` (by searched move).
+
+Do **not** write `alternatives`, `played_quality`, `concept`, `refutation`, `better_line`,
+`point_loss`, `played_move`, `preferred_move` or `player_color` in a lesson: schema 2 forbids or
+ignores them. Use the band's register (level-ladder.md): below 10k, gloss every Japanese term
+inline at first use, no engine jargon, one idea per sentence.
+
+### 8. Praise: 3–4 good moves strictly from `teaching.praise`
+
+Take entries from `teaching.praise` in order (up to 4). Each `good_moves` entry: `move_number`,
+`move`, `kind_label`, `explanation`, and `rating` + `rating_source` **copied verbatim** when both
+exist (omit both otherwise). The explanation opens by copying `note`, then states
+`stones_captured` when > 0 and `gap` when ≥ 1, then — only when `human_prob` < 0.25 — why it was
+not obvious ("players at your level choose it about N% of the time"), then one habit sentence.
+If fewer than 3 entries exist, add student moves from `moves[]` with `stones_captured > 0`,
+stating the capture and nothing more. Never praise any other move; never write "the engine
+praised" for a move absent from `teaching.praise`; never compose a kyu/dan rating.
+
+### 9. Design one puzzle per lesson
+
+Rules (details in `references/grounding-and-practice.md` and level-ladder.md table 2):
+
+- From a researched external example in the band's tier, parsed with a script; never the game
+  position or its symmetry/colour swap; the transformation must change the reading.
+- One explicit `objective` (`capture_within`, `avoid_capture_for`, `compare_plans`),
+  `solution_review` with strongest defences, `board_checks` for every tactical claim.
+- 2–3 `wrong_moves` (`quality`, `explanation`, legal `refutation` starting with the opponent's
+  reply); `correct_lines` per correct move; `generic_wrong_explanation`; `source` (`url`,
+  `title`, `example_locator`, `position`), `transformation`, `verification`,
+  `transfer_explanation`, `lesson_move_number`, `evidence_focus`, `hint`, `explanation`,
+  `opponent_last_move`, `player_to_move`.
+- Verify with `scripts/solve_tsumego.py` or `scripts/verify_puzzle_engine.py`; inconclusive
+  means redesign, not relabel.
+
+### 10. Concepts and resources
+
+One `concepts_learned` entry per lesson concept: `term`, `japanese` (from the table in
+`references/go-teaching-concepts.md`), `description` (2–3 sentences in the band's register),
+`resources` (Go Magic first, Sensei's second, at most 3), `anecdote` copied from the curated
+list in go-teaching-concepts.md or omitted. No other anecdote source.
+
+### 11. Overview, arc and progress
+
+- `overall_feedback` (2–3 short paragraphs): the student's side, the level sentence with its
+  caveat, main strength, main weakness, weakest phase — from `summary.accuracy` and `arc.phases`.
+- `game_arc`: `intro` plus one entry per phase (`phase`, `move_range`, `narrative`, optional
+  `turning_points`, `anchor_move`). Captures only from `moves[].stones_captured` or
+  `arc.status_changes`, with the stone count.
+- `progress.summary` from `facts.current` and `facts.history.prior_games`; the renderer fills
+  the rows. One-game language when there is no prior game.
+- Editorial pass: no takeaway repeated across overview, phase and lesson; a colour before every
+  coordinate in every narrated line; Japanese terms glossed; point names checked.
+
+### 12. Validate
 
 ```
 python <sandbox_dir>/scripts/validate_lesson.py <parsed.json> <lesson.json>
 ```
 
-Run this on every lesson JSON before step 7. It checks that lesson moves exist and were played by the stated colour, that every coordinate is legal and on an empty point (alternatives, refutations, better lines, puzzle stones, correct and wrong moves, punishment sequences), that no puzzle reuses a game position, and that every wrong move has an explanation. For grounded drafts it also checks explicit fact assertions, replayed puzzle liberties, and bounded capture objectives against all legal replies. Fix every PROBLEM line; read the warnings. It does not certify the meaning of unrestricted prose, puzzle difficulty or unconditional life/death: compare the actual sentences to facts.json before rendering.
+Set `schema_version: 2` and `grounding_version: 1`. Fix every PROBLEM line; read the warnings.
+The validator checks references and legality, not the meaning of free prose: reread each
+checked sentence against facts.json.
 
-### 2. Identify the student
-
-Read `game_info.student` (`"B"` or `"W"`) and `game_info.student_reason`. The program picks the side facing an engine-looking name (KaTrain writes bots as "AI (...)"), otherwise Black, unless the user overrode it. If the reason says "default" and the player names are empty or ambiguous, state in the overview which side you are treating as the student. Every lesson, praised move and statistic must refer to that side. Never assume Black.
-
-### 3. Choose 2–3 teaching moments
-
-Start from `teaching.candidates`. The program has already ranked the student's mistakes by point loss and dropped repeats from the same local fight; each entry carries facts you cannot compute yourself:
-
-- `engine_strongly_favoured_side_before` (legacy `decided_before`) and `winrate_before`: engine winrate saturation can hide large mistakes. Prefer point loss, and retain later lead reversals in the game arc. Do not say a human game was decided from a single saturated evaluation.
-- `loss_region` and `loss_region_points`: where on the board the points changed hands.
-- `better_move_is` ("same area" = shape or reading; "elsewhere" = direction or priority).
-- `captured_at`: the played stone was captured later, a reading error.
-- hints about atari, tenuki while threatened, and unnecessary local answers.
-- `net_policy` / `human_policy`: how natural the move looked to KataGo's network and the probability assigned by the chosen human profile. High human policy plus a large loss = a typical mistake for the level, worth a lesson. Very low human policy = an unusual slip.
-- `theme`: the program's rule-based classification (reading / tactics, life and death, tenuki while threatened, over-defending / priority, shape / connection, endgame counting, direction of play). Use it as the default theme; override only with a stated reason.
-- `refutation` and `refutation_score`: the opponent's strongest punishment after the played move (opponent moves first) and where it leads. This is *what the mistake allows* — the core of a "why it's wrong" explanation. `better_line` is KataGo's continuation after the preferred move.
-- `status_changes`: predicted group ownership changes, plus actual captures. Legacy alive/dead labels are predictions under subsequent play, not proofs. Use restricted searches and evaluated lines for stronger tactical explanations.
-- `chain_before` / `chain_after`: the moves played in the same area shortly before and after, each with its point loss and notes (captured at N, status changes). This is the raw material for the cause→effect story in step 3a.
-- `target_policy` (when a stronger target profile was chosen): the probability assigned by the stronger target profile to the played move and its preferred choice. Together with `human_policy` it gives the level framing directly: "the 5k model assigns D4 60% probability here".
-- `time_spent_seconds` and `fast` (when the record has clocks): timing can motivate a count-first habit, but does not establish why the mistake happened.
-
-Pick 2–3 candidates with distinct themes (see `references/go-teaching-concepts.md`); prefer candidates with a non-empty `refutation` and a clear `theme`. Fall back to `summary.biggest_mistakes` filtered by `player` only if fewer than two candidates exist.
-
-### 3a. Trace the arc of the game
-
-Use `references/game-arc-commentary.md` to connect the selected lessons to the game's development. The arc is supporting context; do not manufacture a theme for every phase. For format 5, follow the compact-context guidance in `references/evidence-format5.md`. In short:
-
-- **Segment the game into phases** — the report does this for you: `arc.phases` gives each phase's move range, Black's winrate and the score at both ends, mean loss per side, the worst move per side, the student's top-1 rate, and the *hot regions* where ownership changed most. `arc.status_changes` lists predicted ownership changes and observed captures, by move. Write a short account of each phase using those numbers: how the balance shifted and the useful decisions behind it when supported by the teaching evidence. One or two sentences can be enough; expand only when it clarifies a lesson.
-- **Trace a cause→effect chain around every shortlisted move** — start from the candidate's `chain_before` and `chain_after` (moves in the same area with their losses and notes), its `status_changes`, `captured_at` and `refutation`. Backward: which earlier move in the chain set up the problem (the mistake is rarely the first error in its chain). Forward: what the refutation shows the move allowing, and what actually happened in the chain ("the atari at 23 was answered too late; by 27 the group had to sacrifice two stones, and that sacrifice made White's centre thick — which is why the 31 invasion failed"). Only the moves listed in the chains and the status table are safe to cite as connected; do not invent links between distant moves.
-- **Research the patterns supported by the selected phases and chains** — playing under strong stones, premature invasion, urgent-before-big, ladder direction — and carry those names into step 4's searches. Do not force a named pattern onto a phase that does not support one.
-- **Use supporting positions when needed.** In new format-5 reports, `context_moves` identifies the opponent's biggest mistakes, checkpoints and last move; `move_details[str(number)]` has their evaluations and searched alternatives. Read those entries from parsed.json to support a transition or an opportunity the student missed. Teaching candidates and praised moves retain their existing evidence. Do not make every supporting position a separate lesson.
-- **Use `openings` for the opening phase.** Each corner comes with a summary such as "4-4 point, small knight's approach, 3-3 invasion" and the first move KataGo disliked there. Research that exact pattern (step 4) and let the opening phase narrative say which corner went wrong and how. Geometric corner labels and first deviations are research leads, not validated joseki recognition. Verify the pattern before naming a joseki.
-- **Use current statistics for this game.** In format 5, read `facts.current` and use only `facts.history.prior_games` for comparisons. Possible earlier analyses of the same game are separated and excluded. The renderer derives `progress.rows` from these facts; write its supported summary. Legacy reports may supply an existing history table, but never substitute an older row for current statistics or invent a trend.
-- **Use `summary.timing` in new format-5 reports, or legacy `time_and_loss` when present**: compare recorded times for the student, checking sample counts and missing data. A timing/loss association can suggest a count-first habit; it cannot prove carelessness or time pressure. In format 5 each player has their own median split; do not compare the student with the bot's speed.
-
-Every arc claim obeys Board-fact discipline (below): only report captures, atari and liberties the report supports.
-
-### 4. Research patterns, remedies and classic examples online
-
-Run the research as a **sequence** of searches that follows how the game developed, not one search per mistake — the full methodology is in `references/game-arc-commentary.md` (phase searches, chain searches, pattern-name searches, pro-example searches). Then, for each chosen mistake, read the promising results in full. Look for:
-
-- **The pattern name** ("playing under strong stones", "empty triangle", "premature invasion", "tenuki when threatened", "ignoring atari", "reverse sente"). Search the theme + "Go" + "beginner" or "mistake".
-- **How teachers explain it**: Sensei's Library, Go Magic, learn-go.net, GoProblems, books, videos. You want memorable phrasing, analogies and the standard corrective advice.
-- **How to avoid it**: drills, habits and rules of thumb.
-- **Classic example positions** of the same idea (a well-known tsumego, a proverb illustration, a joseki deviation). These seed the puzzles in step 6. Note the shape, not the coordinates. When you later need a classic problem's exact stones, take them from the machine-readable collections described in [references/tsumego-source-formats.md](references/tsumego-source-formats.md) — never transcribe from image diagrams.
-
-Also search for the specific shape if it maps to a known joseki or fuseki pattern. Distill 2–3 bullets per mistake, and one cause→effect chain per lesson. Research thoroughly with no preset search, source or time cap. Continue until explanations and external puzzle examples are supported; if access fails, state what could not be verified.
-
-**Go Magic first.** Check the verified Go Magic tutorial library in `references/game-arc-commentary.md` for a course or free lesson covering the concept, and make it the first resource link. Go Magic's video lessons are unusually beginner-friendly; the free lesson "Three Stages of the Game" (https://gomagic.org/lessons/three-stages-of-the-game/) is the model for framing phase transitions. Re-verify any slug you cite that is not in the library: search gomagic.org for the exact course title before linking.
-
-### 5. Write the lesson content
-
-For each chosen mistake write:
-
-- **What happened**: the position, the opponent's last move, what the student played, what KataGo preferred. Use the hints and `loss_region` to say *where* and *why* in concrete terms.
-- **Why it's wrong**: the strategic or tactical concept, in beginner language, grounded in your research. Name the pattern if it has a name. Lead with what the move *allows*: walk the `refutation` (the opponent's strongest reply and continuation) in 2–3 sentences and put it in `refutation_explanation`. The Your move panel plays this sequence with numbered stones, so refer to the numbers ("after 1 and 3 the D3 stones have one liberty").
-- **The variation**: walk through KataGo's `better_line` (the same as `preferred_pv`) and explain the significant moves in `variation_explanation`; for schema 2 reference the evidence and write the Best panel text; for legacy schema 1 copy the line into `better_line`.
-- **Life and death**: when `status_changes` predicts a group ownership loss, state it as a prediction; when the actual board records a capture, state that capture with the group's anchor point and stone count, and make the lesson about the status of that group.
-- **Graded alternatives**: from the move's candidate table (`candidates`, with `loss_vs_best`), take 2–4 other moves a beginner might consider and write one or two sentences each on *why* it is worse (or nearly as good). Set `loss_vs_best` and `quality` (best / good / inaccuracy / mistake / big mistake / blunder, thresholds 0.5 / 1.5 / 3 / 6 / 12 points). Include the played move's own quality as `played_quality`. The HTML shows each alternative on the board with a colour for its quality and a "Show all candidates" overlay.
-- **Level framing**: when human-policy numbers exist, say whether this is a common move at the student's level and what a stronger player would do instead, and put it in the lesson's `level_framing` field (rendered as an "At your level" callout). Prefer the target-profile numbers when they exist: "the 10k profile assigns the played move 30%; the 3k profile assigns it much less and prefers D4 (60%)". Bind each value to its actual move, check the comparison direction, and describe model probabilities rather than observed frequencies.
-- **The principle**: one sentence the student can remember, phrased as a habit.
-
-Also write the arc and summary content:
-
-- **The overall game summary** (`overall_feedback`, 2–3 short paragraphs): what the student does well, the main weakness, which phase needs work. Use `summary.accuracy`, `arc.phases` (mean loss and top-1 rate per phase) and the theme counts across candidates, and say which side the student is.
-- **The game arc** (`game_arc`): a short `intro` plus one entry per phase (opening / middle game / endgame) with `phase`, `move_range`, a brief `narrative` (expand only when useful), and optional `turning_points` (short move-tagged notes). This is the holistic commentary — how the strategic balance swung, not a move-by-move list. The Game Overview and arc prose sit beside a persistent context board: every `move N` and every uniquely-played coordinate you mention becomes a clickable jump to that position, so reference moves naturally by number or point. Each phase may also set an optional integer `anchor_move` (and the root an `overview_anchor_move`) choosing the position its card shows — default is the end of the phase's move range / the final position. Follow `references/game-arc-commentary.md` on voice and board-fact discipline.
-- **The lesson story** (`story` on each lesson): 2–4 sentences tracing the cause→effect chain around that move — how the position arose and what the mistake led to, anchored in move numbers taken from `chain_before`, `chain_after` and `status_changes`. Keep it distinct from `explanation` (the tactical why) — the story is the context.
-- **Theme**: copy the candidate's `theme` into the lesson's `theme` field (shown as a badge) and choose `concept` / `concept_label` to match it.
-- **Progress** (`progress`, optional): when `history` exists, a `summary` paragraph on the trend and `rows` copied from `history.metrics` (`metric`, `this_game`, `recent_average`). Rendered as a "Your Progress" card after the game arc.
-
-### 5a. Highlight moves played well
-
-Use `teaching.praise` first: moves where the student found KataGo's first choice and the second-best was clearly worse in a live position. Add 1–2 more only if the report supplies supporting rank/alternative evidence (rank #1, low loss, not a forced or trivial move). The new format-5 timeline supplies loss and score, not per-move ranks; low loss alone is insufficient for an "only good move" claim. Give each a beginner-friendly explanation of what the student did well. Avoid invented kyu/dan ratings.
-
-### 6. Design practice puzzles
-
-For each lesson concept, design 1–2 puzzles. Rules:
-
-- **Not from the game.** Never reuse the game position or a trivially edited copy of it.
-- **Non-obvious variations.** Start from the classic examples you found in step 4, then transform them: rotate or mirror, swap colours, move the fight to a different side or corner, add a stone or two that changes the reading without changing the lesson. The right answer should require applying the principle, not pattern-matching the lesson board. When a classic tsumego seeds the puzzle, get its exact position with `scripts/parse_tasuki_tex.py` and verify its bounded objective with `scripts/solve_tsumego.py` (crop + mechanical search) as described in [references/tsumego-source-formats.md](references/tsumego-source-formats.md), rather than reconstructing it from diagrams. If a search feels slow, follow that reference's fallback ladder — never substitute visual design or "quickly verifiable" hand-made positions for mechanical verification.
-- **One concept, one explicit objective.** Follow grounding-and-practice.md; distinguish bounded capture/survival from a searched preference. Accept all equally valid verified answers. Do not claim unique whole-board optimality from a sparse puzzle or a finite search. Verify the position is coherent: no overlapping stones, no stones off the board, the correct move is on an empty point, groups you call "in atari" really have one liberty, the opponent's last move is a stone that is on the board.
-- **Graded wrong moves with punishments.** List 2–3 tempting wrong moves in `wrong_moves`, each with `quality`, an explanation of *why it falls short*, and a `refutation`: the alternating continuation, beginning with the opponent's reply, through the strongest defence and necessary follow-up, as GTP coordinates on the puzzle board. When the student clicks a wrong move the HTML plays that punishment with numbered stones, which is far more convincing than a sentence. Model the punishments on the lesson's `refutation`: the puzzle should fail for the same *reason* the game move failed, in a different shape. Also give `generic_wrong_explanation` for clicks that hit none of them. Replay the complete line with captures, passes and ko; a captured point can legally become available again. For schema 2 include source, transformation, transfer relation, verification and correct_lines as specified in evidence-format5.md.
-- **Life-and-death puzzles.** When a lesson's theme is life and death, build the puzzle around a group that lives or dies with one move, and use the `status_changes` vocabulary ("this group has one eye; find the move that makes the second").
-- **Opening puzzles.** When the lesson comes from an `openings` first deviation, the puzzle is a corner position from the same pattern family (found in research) transformed to another corner or colour, asking for the standard move; wrong moves are the deviation and one other tempting mistake, with their punishments.
-- **Count-first puzzles.** When a selected lesson involves a reading mistake and recorded timing suggests a useful count-first habit, consider a capturing race or atari sequence where the obvious quick move loses and the answer needs one more liberty counted. A timing statistic alone does not require an extra puzzle or establish time pressure.
-- **Ground and verify.** Include the specific external example and original board, meaningful transformation, objective, strongest-defence reading, and replayed board assertions from grounding-and-practice.md. Use its optional KataGo checker when available. The original source solution does not automatically verify a transformed board.
-- **Validate.** Run `scripts/validate_lesson.py` (step 1a) and fix every problem before generating.
-- Include `opponent_last_move` so the student has context, a `hint`, and an `explanation` of the correct move.
-
-Keep positions simple enough to read out mentally: 9x9 or a corner/side fragment of a larger board.
-
-### 6a. Write the Go concepts & resources section
-
-One `concepts_learned` entry per concept: English term, Japanese term with kanji and romaji, a 2–3 sentence description, 2–3 resource links found in your research, and a memorable anecdote or proverb. `references/go-teaching-concepts.md` has terms and anecdotes to draw on.
-
-### 7. Generate the HTML
-
-For format 5 write schema 2 from `references/evidence-format5.md`; use `references/html-build-guide.md` for the retained narrative/resource fields and legacy schema. Run the validator (step 1a); it also checks that `game_arc` has phases and every lesson has a `story`. Then:
+### 13. Generate and deliver
 
 ```
 python <sandbox_dir>/scripts/generate_lesson.py <parsed.json> <lesson.json> <output.html>
 ```
 
-### 8. Deliver
+Open the HTML: praise cards with rating sources, the level line, one narrated sequence per
+lesson, puzzle wrong-move playback. Write to `/scratch/work/` first, promote with
+`workspace_emit`, then `present_output`. Deliver the single HTML file.
 
-Save the HTML and deliver it. If writing with Python (which may seek), write to `/scratch/work/` first, then promote with `workspace_emit`, then `present_output`.
+## Run as a team when the platform allows it
+
+`references/orchestration.md` splits the same steps: Stage 0 (steps 1–4 plus a research plan,
+sequential); Stage 1 (parallel: one agent per moment for steps 6, 7, 9; an overview agent for 5
+and 11; a praise agent for 8; a concepts agent for 10); Stage 2 (`scripts/merge_lesson_parts.py`,
+editorial pass, steps 12–13, re-dispatch only the failing part). Slices come from
+`scripts/slice_for_agent.py`; each agent gets one prompt template with its slice, forbidden
+actions and exact output JSON. The same file gives the single-agent order.
 
 ## Board-fact discipline
 
 The student will check your claims against the board. Only state what the report supports:
 
-- Captures: only if `captured_at` or a `status_changes` row says so, or the diagram / compact move list shows it.
-- Life-and-death: legacy status_changes labels are ownership predictions. Only state unconditional life/death, seki or eye counts when the reading or verified board facts establish them.
-- Punishing sequences: quote `refutation` for the game position; for puzzles you design the sequence yourself and must verify it on the puzzle board.
-- Atari and liberties: verify using `go_rules.Position.group` and `board_checks` for the exact replayed position; do not infer safety from a group gaining liberties.
-- "Where the points went": use `loss_region`.
-- Do not invent ladders, nets or ko fights that the PV does not show. If you want to demonstrate a tactic beyond the PV, say that it is your own illustration.
-- Coordinates: GTP letters A–T without I, rows from the bottom. Check every coordinate you write against the stone lists.
+- **Colours**: every narrated move is a copied `*_with_colours` token; the first mover of a
+  refutation is the opponent, of a better line the student — but you never derive this, you copy.
+- **Point names**: count from the corner using the coordinates. On 9x9, B3 is the 2-3 point of
+  the lower-left corner (column B = 2nd line, row 3 = 3rd line); C3 is the 3-3 point; the
+  corner point A1 is 1-1. Write the coordinate next to the name.
+- **Captures**: only when `moves[].stones_captured > 0`, `captured_at`, or an
+  `arc.status_changes` row says so; state the stone count.
+- **Life and death**: status labels are ownership predictions. Unconditional life/death, seki or
+  eye counts only when reading or verified board facts establish them.
+- **Atari and liberties**: from `facts.lessons[N].groups` or `board_checks`, never inferred.
+- **Praise**: only `teaching.praise` entries and recorded captures (step 8).
+- **Level**: `student_profile` wording with "plays like" and the caveat; never a rating.
+- **Where the points went**: `loss_region`. **Tactics beyond the PV**: your own illustration, or omit.
+- **Coordinates**: GTP letters A–T without I, rows from the bottom; check each against the stone lists.
 
 ## Tone and style
 
-Write as a patient teacher talking to a beginner:
-
-- Explain WHY, not just WHAT. "E7 connects your stones so White cannot cut" beats "E7 is 7 points better."
-- Concrete language: "this stone is in atari", not "suboptimal tactical properties".
-- Encouraging: mistakes are learning opportunities. Praise the good moves genuinely.
-- Connect each lesson to a memorable habit.
+Write as a patient teacher at the band's register (level-ladder.md). Explain WHY, not just
+WHAT ("B D7 connects your stones so White cannot cut at W E7"); concrete language ("one liberty
+left — atari", not "ownership −0.9"); encouraging and honest — praise comes from the evidence,
+never from goodwill; one memorable habit per lesson.
 
 ## Reference files
 
-- `references/tsumego-source-formats.md` — machine-readable tsumego sources (tasuki tex corpus, pregenerated SGFs, solution trees): formats, decoding rules, coordinate conventions, the verified pitfalls, and the parser/solver scripts (`parse_tasuki_tex.py`, `solve_tsumego.py`)
-- `references/grounding-and-practice.md` — deterministic facts, checked draft claims, externally sourced variations and strongest-defence verification
-
-- `references/evidence-format5.md` — format 5, schema 2, evidence-driven panels and researched practice variations
-- `references/katago-review-format.md` — legacy markdown structure (formats 2–4), every field including refutations, chains, themes and arc facts, how to read diagrams and tables
-- `references/go-teaching-concepts.md` — mistake themes, decided games, human-policy framing, grading alternatives, puzzle variation design
-- `references/game-arc-commentary.md` — phase segmentation, cause→effect chain tracing, sequential search methodology, arc narrative voice, verified Go Magic tutorial library
-- `references/html-build-guide.md` — lesson JSON schema (game arc, story, alternatives, wrong moves), HTML behaviour
+- `references/orchestration.md` — team stages, one prompt template per agent, single-agent fallback
+- `references/level-ladder.md` — rank bands, concept ladder with Go Magic/Sensei's/tsumego tiers, selection rules, prose register, escalation
+- `references/evidence-format5.md` — format 5, evidence versions 1 and 2, lesson schema 2
+- `references/grounding-and-practice.md` — facts.json, fact_checks, puzzle objectives and verification
+- `references/game-arc-commentary.md` — phases, chains, sequential searches, verified Go Magic library
+- `references/go-teaching-concepts.md` — themes, praise kinds, Japanese terms, curated anecdotes
+- `references/tsumego-source-formats.md` — machine-readable tsumego sources and parsers
+- `references/html-build-guide.md`, `references/katago-review-format.md` — HTML behaviour; legacy schema and formats 2–4

@@ -129,17 +129,19 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 **Lesson object:**
 - `theme` — the candidate's theme from the report (shown as a badge next to the concept label).
 - `level_framing` — optional: the human-policy comparison ("At your level" callout above the principle). Use the report's human and target-profile numbers; omit when neither exists.
-- `refutation` — the opponent's punishing sequence after the played move, opponent first, GTP coordinates (copy the report's `refutation`, 4–8 moves). Rendered by the **What it allows** button: the board shows the played move (red circle) and then the sequence with numbered stones. `refutation_explanation` is the text shown with it; refer to the stone numbers.
-- `better_line` — KataGo's line after the preferred move, mover first (copy `better_line`). Rendered by the **Better line** button with numbered stones and `variation_explanation` as its text.
+- `refutation` — (schema 1 only; schema 2 takes it from the report) the opponent's punishing sequence after the played move, opponent first, GTP coordinates. Shown in the **Your move and what it allowed** panel as numbered stones, with the coloured sequence line ("B G4 → W F3 → …") under the stepper. `refutation_explanation` is the text shown with it; refer to the stone numbers or the coloured tokens, never bare coordinates.
+- `better_line` — (schema 1 only) KataGo's line after the preferred move, mover first. Shown in the **A better plan** panel with numbered stones and `variation_explanation` as its text.
 - `player_color` — "B" or "W": the student's colour for this lesson. Optional: when omitted the generator uses the colour of that move in the parsed move list, then `game_info.student`. Set it explicitly when the student is White.
 - `played_quality` — quality label of the played move (best / good / inaccuracy / mistake / big mistake / blunder).
-- `alternatives` — 2–4 other moves a beginner might consider, each with `move`, `loss_vs_best` (points, from the candidate table), `quality`, and an `explanation` of why it is worse or nearly as good. Rendered as buttons under the board; clicking one places the stone with a colour for its quality and shows the explanation. A "Show all candidates" button overlays every listed move at once with its loss.
+- `alternatives` — (schema 1 only; schema 2 uses `alternative_explanations` keyed by searched move) other moves a beginner might consider, each with `move`, `loss_vs_best` (points, from the candidate table), `quality`, and an `explanation`. Shown in the **Other choices, graded** panel: every alternative is circled on the board with a colour for its quality, and the branch selector lets the student step through each evaluated branch (the report's `tree_*` sequences, else the candidate's `pv`).
 - `move_number` — which move in the game this lesson covers (1-indexed). The generate script replays all moves before this to reconstruct the board position.
 - `played_move` / `preferred_move` — GTP coordinates (e.g., "E6", "E7"). The script uses the parsed JSON's move list for the full context.
-- `explanation` — the main teaching text (shown when user clicks "Show played move")
+- `explanation` — (schema 1) the main teaching text of the **Your move** panel; schema 2 lessons write `panels.played` instead
 - `story` — required on every lesson: 2–4 sentences tracing the cause→effect chain around this move (how the position arose and what the mistake led to), anchored in move numbers. Rendered as a "How we got here" block at the top of the lesson side panel, always visible regardless of which navigation button is active. Keep it distinct from `explanation` (the tactical why) — the story is the game-flow context. If a chain genuinely doesn't exist (the mistake came out of nowhere), write that: "This one came out of nowhere — a rare unforced error" still gives the student the arc context.
-- `variation_explanation` — explains what happens when the preferred move is played (shown when user clicks "Show better move")
-- `principle` — one-sentence takeaway, displayed prominently
+- `variation_explanation` — (schema 1) the text of the **A better plan** panel; schema 2 lessons write `panels.best` instead
+- `principle` — one-sentence takeaway, displayed prominently. Like all static prose it goes through the `**bold**` formatter and the glossary (see below).
+- `panels` — (schema 2) `{position, played, best, alternatives, local, what_if}` prose for the six panels. Panel prose uses the same rules as static prose: `**bold**` becomes `<strong>`, blank lines separate paragraphs, HTML is escaped, and the first glossary term in the panel is defined with `<abbr>`. The pairing text of a `sequence_explanations[id]` entry replaces the panel prose while that sequence is selected.
+- `story`, `level_framing` — see below; both go through the same formatter and glossary.
 
 **Puzzle object:**
 - `black_stones` / `white_stones` — arrays of GTP coordinates for the initial position
@@ -151,11 +153,13 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 - `wrong_moves` — 2–3 tempting wrong answers, each `{move, quality, loss_vs_best, refutation, explanation}`. Clicking one shows its quality badge and explanation, and plays `refutation` (the full alternating continuation, opponent first, GTP coordinates) on the board with numbered stones. The validator replays captures, passes and ko to check each successive move; the strongest defence still needs verification.
 - `generic_wrong_explanation` — retained for compatibility. Unlisted clicks are now labelled unverified rather than wrong.
 
-**Good move object:**
+**Good move object (praise card):**
 - `move_number` — which move in the game (the board replays all moves up to and including this one)
-- `move` — GTP coordinate of the good move (shown with a green circle marker)
-- `rating` is optional and should normally be omitted. A badge is shown only with `rating_source` supporting that exact assessment. Do not invent a kyu/dan strength to encourage the student.
-- `explanation` — why this move was good, in beginner-friendly language
+- `move` — GTP coordinate of the good move (shown with a green circle marker). The card title is colour-safe: "Move 21: B G8".
+- `explanation` — why this move was good, in beginner-friendly language (`**bold**` and the glossary apply)
+- Evidence fields are **hydrated from the report**, not written by you: when `teaching.praise[]` in parsed.json has an entry for the same `move_number`, the generator copies its `kind_label` (badge: capture / saved a group / only good move / non-obvious best move / best move), `note` (one factual line under the title), `stones_captured` (shown as "Captured N stones" when > 0), `gap` (shown as "N points better than the next searched move"), `rating` and `rating_source`. Report values override anything you wrote for those keys.
+- `rating` should normally be omitted. A rating badge is rendered **only** together with a visible "Source: …" line taken from `rating_source`; a rating with no source (yours or the report's) is dropped silently. Do not invent a kyu/dan strength to encourage the student.
+- Cards sit in a responsive grid (one column on phones, two to three on wide screens) so three or four praise cards read as a set.
 
 **Concept learned object:**
 - `term` — the English name of the Go concept (e.g., "Direction of Play", "Sente and Gote", "Shape")
@@ -163,6 +167,16 @@ The generate script takes two inputs: the parsed JSON (from `parse_review.py`) a
 - `description` — a clear, beginner-friendly explanation of the concept (2-3 sentences)
 - `resources` — array of `{title, url}` objects linking to external learning resources. Include links to Sensei's Library, Go Magic, YouTube videos, or other established Go resources. Search the web to find the best links.
 - `anecdote` — an interesting historical story or Go proverb related to the concept. Make it memorable — stories about famous players (Go Seigen, Shusaku, Lee Sedol), famous proverbs ("Play on the open side"), or historical moments in Go. Keep it 2-4 sentences.
+
+## Fields the generator reads from parsed.json
+
+Besides `game_info`, `moves`, `move_details` and `teaching.candidates` (joined by `lesson_contract.hydrate`), the generator consumes:
+
+- `student_profile.estimate.{rank_label, low_label, high_label, wording}` — perspective-bar "Your level" label and small wording text
+- `student_profile.working_rank.{rank_label, games}` — "Working rank" line in Your Progress
+- `student_profile.profiles_used.{student, target}` (fallback `profiles`) — target label and the level fallback; named in the source line
+- `teaching.praise[]` — `move_number`, `mv`, `kind_label`, `note`, `gap`, `stones_captured`, `rating`, `rating_source` for the praise cards
+- `teaching.candidates[].refutation_with_colours` / `better_line_with_colours`, every sequence's `moves_with_colours`, and `move_details[n].candidates[].pv` / `pv_with_colours` — colour-safe sequence lines
 
 ## How the generated HTML works
 
@@ -174,40 +188,56 @@ The HTML embeds a lightweight canvas-based Go board renderer in vanilla JavaScri
 - Stone placement (black/white) with shadows
 - Move replay with capture handling (for lesson positions)
 - Explicit stone placement (for puzzle positions)
-- Visual markers: colored circles (red for played move, green for preferred move, quality colours for alternatives), labels
+- Visual markers: blue square (opponent's last move), coloured circles (quality colours for alternatives), numbered labels for sequence stones (numbers disappear with captured stones)
 - Click detection (for puzzle answering)
 
 ### Context board
 
 The Game Overview and How the Game Unfolded sections sit in a two-column layout with a persistent board pinned beside the prose (it scrolls away before "Your Progress", where the lesson boards take over; on narrow screens it stacks above the text and stays pinned at reduced size). Clicking a phase card jumps the board to that phase's `anchor_move` and highlights the card; clicking a move reference in the prose (a dotted-underlined "move N" or a coordinate that was played exactly once in the game) shows the position after that move with the move circled and a caption naming it. The overview defaults to the final position (`overview_anchor_move` overrides it).
 
-### Lesson interaction
+### Perspective bar and level labels
 
-Each lesson shows a Go board with three navigation states:
+A sticky bar above the lessons holds three perspective buttons: **Engine**, **Your level · X** and **Target level · Y**. They select which sampled sequences the panels show (`played_engine` / `played_student` / `played_target`, and so on).
 
-1. **Position** — the board before the move (moves replayed from game start). The opponent's last move is marked with a **blue square** so the student can see what the opponent just did — this provides the context for understanding why their own move was a mistake.
-2. **Show played move** — the same position with the played move added (red circle marker). The blue square on the opponent's last move remains visible.
-3. **Show better move** — the same position with KataGo's preferred move added (green circle marker). The blue square remains visible here too.
+Where the labels come from (all read from parsed.json, never from the lesson JSON):
 
-The explanation text changes based on which button is active. The principle is always visible below, and the "How we got here" story block (`story`), when present, is always visible above the explanation panel.
+- **Your level** — `student_profile.estimate.rank_label` when the report has an estimate; the estimate's `wording` ("plays like a 12k in this game (range 14k–10k, 40 moves)") appears as small text under the bar's heading. Without an estimate the label falls back to `student_profile.profiles_used.student`, then to the legacy top-level `profiles.student`.
+- **Target level** — `profiles_used.target` (fallback `profiles.target`).
+- One small source line is always printed: either "Your level is this game's human-profile estimate (12k, range 14k–10k); the human-style sequences were sampled with the 10k profile and the target level is the 3k profile…", or "Levels are the human profiles used for this analysis (student 10k, target 3k); no per-game level estimate was available.", or "No level estimate is available for this report". The estimate describes similarity to human play; the line says so explicitly.
+- **Your Progress** card — when `student_profile.working_rank` exists, the card ends with "Working rank: 11k" and a source line ("smoothed over your last N analysed games"). The card is rendered whenever there is progress prose, progress rows, or a working rank.
 
-A legend below the board controls explains the three marker types: blue square (opponent's last move), red circle (your move), green circle (KataGo's recommendation).
+### Lesson panels
 
-### Sequence playback on lesson boards
+Each lesson has a board with a sequence stepper on the left and, on the right, the "How we got here" story, six panel buttons, an optional branch selector, the prose area, a facts block, the optional "At your level" callout and the principle. The six panels, each labelled with a one-line "what this shows":
 
-**What it allows** places the played move (red circle) and then the lesson's `refutation` with numbered stones, alternating colours starting with the opponent; the side panel shows `refutation_explanation`. **Better line** plays `better_line` from the base position starting with the student's colour and shows `variation_explanation`. Both buttons appear only when the corresponding array is non-empty.
+| Panel key | Label | What it shows |
+|---|---|---|
+| `position` | Position | The board just before the move; facts: best play versus passing, difficulty label and near-best count |
+| `played` | Your move and what it allowed | The played move and the opponent's strongest replies (`played_<level>`, plus `opponent_refutation` in human perspectives) |
+| `best` | A better plan | The engine's preferred move and its continuation (`best_<level>`); facts: initiative class, ownership differences by region |
+| `alternatives` | Other choices, graded | Every searched alternative circled by quality; the selector steps through each evaluated branch (`tree_*`, else the candidate `pv`) |
+| `local` | Read the local fight | The restricted local search: group, liberties, who-moves-first trials and the caveat |
+| `what_if` | What would likely happen next | Longer sampled continuations after the played and the better move, with the rollout comparison |
 
-### Alternatives on lesson boards
+Panel prose comes from `panels.<key>` (schema 2) or the legacy `explanation` / `variation_explanation` fields; a `sequence_explanations[id]` entry replaces it while that sequence is selected, with a label saying so. Prose is rendered by the same formatter as the static page: escape, then `**bold**` → `<strong>`, blank-line paragraphs, first glossary term wrapped in `<abbr>`.
 
-Under the three navigation buttons, each listed alternative has its own button labelled with the move and its loss ("F2 (-9.8)"). Clicking places that stone, colours the marker by quality (green best → yellow inaccuracy → orange mistake → red blunder) and shows the alternative's explanation with a quality badge. "Show all candidates" overlays the best move (★), the played move and every alternative with their losses, so the student sees the whole spectrum at once.
+### Sequence stepper and colour-safe sequences
+
+Under the board: first / previous / play / next / last buttons, a range slider, a "k / n moves" state line, and a **sequence line** that spells the selected sequence with colours — "B G4 → W F3 → B D7 → …" — highlighting the move currently on the board and dimming the moves not yet played. The same string ("Sequence: B G4 → W F3 → …") is the first entry of the facts block for every panel that has a sequence, and the branch selector labels use the same tokens.
+
+Tokens come from the report's `moves_with_colours` (evidence version 2) when present; otherwise the generator's `renderSequence(seq)` alternates from `first_to_move`. Fallback lines built from a candidate's `refutation` / `better_line` use `refutation_with_colours` / `better_line_with_colours`, and alternative branches use the candidate's `pv_with_colours`. Nothing in the UI prints a bare coordinate list.
+
+### Glossary
+
+`generate_lesson.py` holds a `GLOSSARY` dict (semeai, nakade, sente, gote, tenuki, atari, ko, seki, kyūsho, aji, moyo, hane, tesuji). In each block of static prose — overview, arc intro/narratives/turning points, story, principle, level framing, progress summary, praise explanation — the first occurrence of each term is wrapped in `<abbr title="definition">` (dotted underline, tooltip). The panels apply the same dictionary at runtime, once per panel render. Matching is whole-word and case-insensitive; "kyusho" matches without the macron. Keep using the terms in prose; the glossary explains them so you do not have to.
 
 ### Puzzle interaction
 
-Each puzzle shows a static board position with click handling. A wrong click that matches a `wrong_moves` entry shows that move's quality badge and explanation; other wrong clicks show `generic_wrong_explanation`. "Show evaluations" overlays the correct move (★) and all listed wrong moves with their losses and prints a comparison list. The opponent's last move is marked with a **blue square** so the student understands what they're responding to — this mirrors how the position would look in a real game. A legend below the board controls explains the markers (blue square = opponent's last move, green circle = correct answer).
+Each puzzle shows a static board position with click handling. A wrong click that matches a `wrong_moves` entry shows that move's quality badge and explanation and plays its refutation with numbered stones; a click that was not evaluated is labelled "has not been checked in this exercise" rather than wrong. "Show evaluations" overlays the correct move (★) and all listed wrong moves with their losses and prints a comparison list. The opponent's last move is marked with a **blue square** so the student understands what they're responding to — this mirrors how the position would look in a real game. A legend below the board controls explains the markers (blue square = opponent's last move, green circle = correct answer).
 
 1. User clicks on any intersection
 2. If the clicked point matches a `correct_moves` entry: green circle + success message + explanation
-3. If it doesn't match: red circle + "Try again" message
+3. If it matches a listed wrong move: quality-coloured circle + explanation; unlisted clicks are marked unverified
 4. A "Hint" button reveals the hint text
 5. A "Reset" button clears the feedback and lets the user try again (the blue square remains visible)
 
@@ -217,45 +247,47 @@ Each puzzle shows a static board position with click handling. A wrong click tha
 ┌─────────────────────────────────────┐
 │  Header: game title, players, result │
 ├─────────────────────────────────────┤
-│  Game Overview (overall feedback)    │
+│  Game overview, development, progress│  (collapsible <details>)
+│  ┌──────────────────┐ ┌──────────┐  │
+│  │ Game Overview     │ │ Context  │  │
+│  │ How the Game      │ │ board    │  │
+│  │ Unfolded (phases) │ │ (pinned) │  │
+│  └──────────────────┘ └──────────┘  │
+│  Your Progress (rows + working rank) │
 ├─────────────────────────────────────┤
-│  How the Game Unfolded (game arc)    │
-│  Intro + one card per phase           │
-│  (Opening / Middle / Endgame)         │
+│  Perspective bar: Engine / Your level│  (sticky; wording + source line)
+│  · X / Target level · Y              │
 ├─────────────────────────────────────┤
 │  Lesson 1                             │
 │  ┌──────────┐  ┌─────────────────┐  │
 │  │  Board   │  │  How we got here │  │
-│  │  Canvas  │  │  Navigation      │  │
-│  │          │  │  Explanation     │  │
-│  │          │  │  Principle        │  │
+│  │  Stepper │  │  Six panels      │  │
+│  │  Sequence│  │  Branch selector │  │
+│  │  line    │  │  Prose + facts   │  │
+│  │  Legend  │  │  Principle       │  │
 │  └──────────┘  └─────────────────┘  │
 ├─────────────────────────────────────┤
-│  Lesson 2 (same layout)              │
+│  Lesson 2, 3 (same layout)           │
 ├─────────────────────────────────────┤
-│  Lesson 3 (same layout)              │
+│  Moves You Played Well (grid)         │
+│  ┌────────────┐ ┌────────────┐      │
+│  │ Board      │ │ Board      │      │
+│  │ Move · kind│ │ Move · kind│      │
+│  │ note, facts│ │ note, facts│      │
+│  │ explanation│ │ explanation│      │
+│  │ rating +   │ │            │      │
+│  │ Source     │ │            │      │
+│  └────────────┘ └────────────┘      │
 ├─────────────────────────────────────┤
-│  Moves You Played Well                │
+│  Puzzle 1, 2 …                        │
 │  ┌──────────┐  ┌─────────────────┐  │
-│  │  Board   │  │  Rating badge    │  │
-│  │  Canvas  │  │  Explanation     │  │
+│  │  Board   │  │  Goal, source    │  │
+│  │  Hint /  │  │  Feedback        │  │
+│  │  Evals / │  │  Hint box        │  │
+│  │  Reset   │  │                  │  │
 │  └──────────┘  └─────────────────┘  │
-├─────────────────────────────────────┤
-│  Puzzle 1                             │
-│  ┌──────────┐  ┌─────────────────┐  │
-│  │  Board   │  │  Instructions    │  │
-│  │  Canvas  │  │  Feedback        │  │
-│  │          │  │  Hint | Reset    │  │
-│  └──────────┘  └─────────────────┘  │
-├─────────────────────────────────────┤
-│  Puzzle 2 (same layout)              │
 ├─────────────────────────────────────┤
 │  Go Concepts & Resources              │
-│  ┌─────────────────────────────────┐ │
-│  │  Term + Japanese + Description   │ │
-│  │  Resource links                  │ │
-│  │  Anecdote box                    │ │
-│  └─────────────────────────────────┘ │
 ├─────────────────────────────────────┤
 │  Footer                               │
 └─────────────────────────────────────┘

@@ -143,12 +143,11 @@ For each theme, design 1-2 puzzles with fresh positions (not from the game) that
 
 ### How to specify puzzle positions
 
-In the lesson JSON, each puzzle has `black_stones` and `white_stones` arrays with GTP coordinates, plus `correct_moves` (array of accepted answers). Example:
+In the lesson JSON, each puzzle has `black_stones` and `white_stones` arrays with GTP coordinates, plus `correct_moves` (array of accepted answers). Schema 2 puzzles also need the source, objective and verification fields in `grounding-and-practice.md`; there is no `concept` key. Minimal example of the board part:
 
 ```json
 {
   "title": "Which direction?",
-  "concept": "direction_of_play",
   "concept_label": "Direction of Play",
   "board_size": 9,
   "black_stones": ["C3", "D3", "C4"],
@@ -204,7 +203,21 @@ When a human profile was chosen, each move has "human policy": how often a playe
 
 ### Explaining with the refutation
 
-The most persuasive "why" is the punishment: the report's `refutation` is the opponent's strongest sequence after the played move, from a real search of that position. Walk it move by move ("1 takes the last outside liberty, 3 captures") and tie the result to the `refutation_score`. Contrast it with the `better_line`: the same fight after the right move. When the candidate has a `status_changes` entry, name the group that died or lived; that is the concrete consequence the student can see.
+The most persuasive "why" is the punishment: the report's `refutation` is the opponent's strongest sequence after the played move, from a real search of that position. Walk it by **copying the tokens of `refutation_with_colours` in order** ("W F3 cuts, B D7 defends, W H8 takes the last outside liberty") and tie the result to the `refutation_score`. Contrast it with `better_line_with_colours`: the same fight after the right move. Never derive colours from move parity or numbering — the eval lesson attributed Black's reply D7 to White that way. In evidence version 1 (no colour lists), build the tokens from `first_to_move` with a short script before writing. When the candidate has a `status_changes` entry, name the group that died or lived; that is the concrete consequence the student can see.
+
+### Praise kinds and how to write about each
+
+`teaching.praise[]` (evidence version 2) is the **only** source of praised moves. Each entry has `kind_label`, a factual `note` to copy, `stones_captured`, `gap` (points the best other searched move was worse), `human_prob` (the student profile's probability for the move), and `rating` + `rating_source` (both or neither). Write 2–3 sentences per entry:
+
+| `kind_label` | First sentence (copy `note`) | Then say | Habit sentence |
+|---|---|---|---|
+| `capture` | "captured N stones without losing points" | the stone count and what the capture settled, if a `status_changes` row names the group | "Count the opponent's liberties before every contact move." |
+| `saved a group` | "brought the student's own group back to life" | which group (anchor from `status_changes`) and that the forecast changed, not that life is proven | "Check your weakest group before playing elsewhere." |
+| `only good move` | "KataGo's first choice; the best other searched move (X) was G points worse" | the gap in whole points; why the alternative failed only if the candidate table shows it | "When groups are short of liberties, look for the one move that decides." |
+| `non-obvious best move` | "KataGo's first choice, yet players at the student's level choose it only P% of the time" | why a beginner misses it: quote `human_prob` as "about P%"; do not guess the psychology | "Look one line deeper than the natural reply." |
+| `best move` | "KataGo's first choice, G points ahead of the next searched move" | nothing more than the gap | one sentence naming the phase habit it shows |
+
+Rules: never compose a kyu/dan rating — copy `rating` and `rating_source` verbatim or omit both; never write "the engine praised" about a move that is not in the list; a student move with `moves[].stones_captured > 0` but no praise entry may be mentioned for the capture only ("captured 5 stones at C1"); take entries in list order, 3–4 in total.
 
 ### Reading the chain
 
@@ -224,11 +237,11 @@ When `time_and_loss` exists and fast moves lose clearly more (say 1.5 points mor
 
 ### Grading alternatives
 
-The candidate table gives `Loss vs best` for each move KataGo searched. Use these thresholds for the `quality` field: best < 0.5, good < 1.5, inaccuracy < 3, mistake < 6, big mistake < 12, blunder ≥ 12. For each alternative you list, explain *what goes wrong* (the opponent's reply from the PV, the group left weak, the point left open), not only the number. A move with 1 visit has an unreliable number; say "KataGo barely looked at this" rather than quoting a precise loss.
+The candidate table (`move_details[n].candidates`) gives `loss_vs_best` for each move KataGo searched. In schema 2 you do not write an `alternatives` array or `played_quality`; you write the `panels.alternatives` prose and optional `alternative_explanations` keyed by searched move, and the generator draws the candidates itself. Use these words for the losses: best < 0.5, good < 1.5, inaccuracy < 3, mistake < 6, big mistake < 12, blunder ≥ 12 points. For each alternative you discuss, explain *what goes wrong* using `pv_with_colours` tokens (the opponent's reply, the group left weak, the point left open), not only the number. A move with 1 visit has an unreliable number; say "KataGo barely looked at this" rather than quoting a precise loss. Puzzle `wrong_moves[].quality` uses the same words, qualitatively, unless the puzzle has its own `evaluation_source`.
 
 ### Puzzle variations that are not obvious
 
-Puzzles must not reuse the game position. Build them from classic examples of the same idea found during research, then transform them so the student cannot answer by matching the lesson board:
+Puzzles must not reuse the game position. Build them from classic examples of the same idea found during research — taken from the tier that matches the student's band in `level-ladder.md` table 2 (Tasuki `cho-1` for 20k–10k, `cho-2` for 10k–5k, `cho-3` above; OGS collections by `puzzle_rank`; Sensei's/gogameguru SGFs), parsed with `parse_tasuki_tex.py`, `parse_sgf_problem.py` or `parse_ogs_puzzle.py` — then transform them so the student cannot answer by matching the lesson board:
 
 1. Rotate or mirror the position, or move the fight to another side or corner.
 2. Swap colours (the student may solve as White).
@@ -271,7 +284,7 @@ When writing the `concepts_learned` section, use these standard Japanese terms w
 
 ## Go anecdotes and proverbs
 
-When writing anecdotes for the `concepts_learned` section, draw from these categories:
+This curated list is the **only** allowed source for `concepts_learned[].anecdote`. Copy an item (light rewording for flow is fine; no new facts, names, dates, quotations or romanisations). If no item fits the concept, omit the `anecdote` key. The eval lesson produced a garbled romanisation and unsupported attributions by composing its own; do not.
 
 ### Famous players
 - **Go Seigen (呉清源, 1914-2014)**: Revolutionized Go in the 1930s with "new fuseki" theory, emphasizing rapid development and playing on the open side rather than fixed corner patterns. His games changed how the entire Go world thinks about the opening.
@@ -286,6 +299,10 @@ When writing anecdotes for the `concepts_learned` section, draw from these categ
 - "The enemy's key point is your key point." — often the vital point of a shape is the same for both sides
 - "Sente gains nothing." — if you play a forcing move that doesn't actually accomplish anything, you've wasted the initiative
 - "Urgent moves before big moves." — respond to threats before taking large territory
+- "An eye beats no eye." (me ari me nashi) — in a capturing race, the group with an eye usually wins because that liberty can never be filled from outside
+- "Make a fist before striking." — settle your own weak group before you attack
+- "Extend from a crosscut." — after a crosscut, extending is usually safer than the reflex atari
+- "Don't atari automatically." — an atari that fails to capture often loses a liberty and strengthens the opponent
 
 ### Historical moments
 - The "Blood Vomit Game" (1835): In a grudge match, Honinbo Jowa was reportedly poisoned but still won, coughing blood onto the board.
