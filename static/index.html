@@ -45,23 +45,60 @@
   .badge-deep { display:inline-block; background:#e8e0f4; color:#4a3a6a; padding:1px 8px; border-radius:10px; font-size:12px; font-weight:700; }
   .notice { padding:8px 12px; border-radius:8px; margin-top:8px; font-size:13px; background:#fbf1d6; color:#7a5a00; }
   /* live viewer */
-  .live { display:grid; grid-template-columns: minmax(280px, 560px) minmax(260px, 1fr); gap:18px; align-items:start; }
-  @media (max-width: 760px) { .live { grid-template-columns: 1fr; } }
+  /* Two equal shrinkable tracks: at a 960px viewport each pane gets (960 - 32 body - 36 card - 18 gap) / 2 = 437px.
+     The five-column candidate table needs roughly 340px and the board stays readable down to about 400px, so stack
+     below 900px (2 x 400 + 18 + 36 + 32 = 886). */
+  .live { display:grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap:18px; align-items:start; }
+  @media (max-width: 899px) { .live { grid-template-columns: minmax(0, 1fr); } .live-board { max-width:560px; } }
   #board { width:100%; height:auto; display:block; background:#dcb35c; border-radius:6px; }
-  .cands td, .cands th { padding:4px 6px; font-size:13px; white-space:nowrap; }
+  .live-board, .live-analysis { min-width:0; }
+  .cands-wrap { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .cands-wrap:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .cands td, .cands th { padding:4px 6px; font-size:13px; }
+  .cands th { white-space:normal; line-height:1.2; vertical-align:bottom; }
+  .cands th small { font-size:10px; font-weight:500; text-transform:none; letter-spacing:0; }
+  .cands th.num, .cands td.num { text-align:right; }
+  .cands td.num { white-space:nowrap; font-variant-numeric:tabular-nums; }
+  .cands td.mv { white-space:nowrap; }
+  .cands td.mv .played-tag { display:block; font-size:11px; color:#1e63d0; font-weight:600; }
   .cands tr.played td { background:#eef5ff; }
-  .minibar { display:inline-block; height:9px; background:#8fb7d9; border-radius:3px; vertical-align:middle; }
-  .minibar.pol { background:#c9a86a; }
+  .minibar { display:block; height:4px; width:100%; max-width:48px; margin:3px 0 0 auto; background:#e8e8e8; border-radius:2px; overflow:hidden; }
+  .minibar > i { display:block; height:100%; background:#8fb7d9; }
+  .minibar.pol > i { background:#c9a86a; }
+  .cands-note { font-size:12px; color:var(--muted); margin:6px 0 12px; }
   #chart { width:100%; height:150px; display:block; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:crosshair; }
   .controls { display:flex; flex-wrap:wrap; gap:12px; align-items:center; font-size:13px; color:var(--muted); margin-bottom:10px; }
-  .controls select { padding:4px 6px; }
+  .controls label { display:inline-flex; flex-wrap:wrap; align-items:center; gap:4px 6px; max-width:100%; min-width:0; }
+  .controls select { padding:4px 6px; max-width:100%; min-width:0; }
   input[type=range] { width:220px; }
   .evalline { font-size:14px; margin:6px 0 10px; }
+  .evalgroups { display:flex; flex-wrap:wrap; gap:4px 14px; align-items:center; }
+  .evalgroups + .evalgroups { margin-top:4px; }
+  .eg { white-space:nowrap; }
+  .eg.wrap { white-space:normal; overflow-wrap:anywhere; }
   .legend { font-size:12px; color:var(--muted); margin-top:8px; }
   .viewopts { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; font-size:13px; color:var(--muted); margin:0 0 10px; padding:8px 10px; background:#f7f6f1; border-radius:8px; }
   .viewopts label { display:inline-flex; align-items:center; gap:4px; }
   .swatch { display:inline-block; width:10px; height:10px; border-radius:3px; }
   .files td { font-size:13px; }
+  .files td.fname { word-break:break-all; }
+  .files td.nw { white-space:nowrap; }
+  .files td.act button { margin:1px 0; }
+  .status code, .files code { overflow-wrap:anywhere; }
+  /* analyses table */
+  .jobs th.idcol { width:2.5em; }
+  .jobs td { overflow-wrap:anywhere; }
+  .jobs .actions { display:flex; flex-wrap:wrap; gap:2px 10px; }
+  .jobs .actions a { margin-right:0; }
+  .jobs details.paths { margin-top:4px; font-size:12px; }
+  .jobs details.paths summary { cursor:pointer; color:var(--muted); }
+  .jobs details.paths summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  .jobs details.paths code { display:inline-block; word-break:break-all; margin-top:2px; }
+  /* engine settings disclosure */
+  details.settings > summary { cursor:pointer; list-style-position:inside; }
+  details.settings > summary h2 { display:inline; margin:0; }
+  details.settings > summary:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+  details.settings[open] > summary { margin-bottom:10px; }
   .danger { color:var(--bad); }
   button.small { font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid var(--line); background:#fff; cursor:pointer; }
   input.path { width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:6px; font:12px "SF Mono", Menlo, monospace; }
@@ -128,8 +165,8 @@ katago version        # must print "Using Metal backend"</pre>
   </div>
 
   <div class="card">
-    <h2>Engine settings</h2>
-    <p class="status" id="enginesource"></p>
+    <details class="settings" id="settingsbody" open>
+    <summary><h2>Engine settings</h2></summary>
     <table>
       <tbody>
         <tr><th style="width:150px">KataGo executable</th><td><input class="path" id="s_katago" placeholder="automatic (KaTrain's engine)"></td></tr>
@@ -147,6 +184,8 @@ katago version        # must print "Using Metal backend"</pre>
       <button class="small" onclick="runBenchmark()">Test engine speed (~30 s)</button>
       <span class="status" id="settingsmsg">Leave a field empty to detect automatically. Saving restarts the engine.</span>
     </div>
+    </details>
+    <p class="status" id="enginesource"></p>
   </div>
 
   <div class="card" id="livecard" hidden>
@@ -166,16 +205,19 @@ katago version        # must print "Using Metal backend"</pre>
     </div>
     <div class="evalline" id="evalline"></div>
     <div class="live">
-      <div>
+      <div class="live-board">
         <svg id="board" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg"></svg>
         <div class="legend" id="boardlegend"></div>
         <div class="legend">Tip: with "follow" off, click an empty point to ask KataGo what happens after that move (variation exploration).</div>
       </div>
-      <div>
+      <div class="live-analysis">
+        <div class="cands-wrap" role="region" aria-label="Candidate moves table" tabindex="0">
         <table class="cands">
-          <thead><tr><th>Move</th><th>Win (mover)</th><th>Score</th><th>Visits</th><th>Policy</th></tr></thead>
+          <thead><tr><th>Move</th><th class="num">Win<br><small>(to play)</small></th><th class="num">Score</th><th class="num">Visits</th><th class="num">Policy</th></tr></thead>
           <tbody id="cands"><tr><td colspan="5" class="empty">Waiting for the first analysed position…</td></tr></tbody>
         </table>
+        </div>
+        <p class="cands-note">Candidate win rate is from the player to move; the summary and chart use Black's win rate. Policy = the network's pre-search preference.</p>
         <canvas id="chart"></canvas>
         <div class="legend">Line: score lead (B+ above the middle, W+ below; dotted grey = Black winrate). Bars: points lost by each move (dark = Black, light = White). Click to inspect a position.</div>
       </div>
@@ -210,8 +252,8 @@ katago version        # must print "Using Metal backend"</pre>
   <div class="card">
     <div class="row" style="justify-content:space-between"><h2>Analyses</h2>
       <span class="status">Games run one at a time in upload order. <button class="linkbtn" onclick="cancelAll()">cancel all</button></span></div>
-    <table>
-      <thead><tr><th>#</th><th>File</th><th>Status</th><th>Result</th><th>Report</th></tr></thead>
+    <table class="jobs">
+      <thead><tr><th class="idcol">#</th><th>File</th><th>Status</th><th>Result</th><th>Report</th></tr></thead>
       <tbody id="jobs"><tr><td colspan="5" class="empty">Nothing analyzed yet.</td></tr></tbody>
     </table>
     <nav class="pagination" aria-label="Analyses pagination">
@@ -237,6 +279,8 @@ const COLS = 'ABCDEFGHJKLMNOPQRSTUVWXYZ';
 
 let windowed = false;
 let engineReady = false;
+let settingsAutoClosed = false;   // collapse Engine settings once, on the first 'ready' status, unless the user touched them
+let settingsTouched = false;
 let wasReady = null;
 let jobs = [];
 let reportFiles = [];
@@ -295,6 +339,7 @@ async function loadStatus() {
     } else {
       b.className = 'banner ok'; b.textContent = 'KataGo is ready: ' + s.engine_version + ', ' + s.backend + ' backend, network ' + s.model_name + '. Upload a game to begin.';
       if (!window.guideDismissed) $('guide').hidden = true;
+      if (!settingsAutoClosed && !settingsTouched) { settingsAutoClosed = true; $('settingsbody').open = false; }
     }
     if (s.engine_state === 'starting') $('guide').hidden = true;
     let notices = '';
@@ -505,8 +550,16 @@ function reportCell(j) {
     a += '<a href="/api/jobs/' + j.id + '/report.md">teaching .md</a><a href="/api/jobs/' + j.id + '/report.json">.json</a>';
   }
   a += '<a href="/report/' + j.id + '/detailed">detailed report</a>';
-  return a + '</div><span class="status"><code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></span>';
+  return a + '</div><details class="paths" data-job="' + j.id + '"' + (openPaths.has(j.id) ? ' open' : '') + '><summary>paths</summary>'
+    + '<code>' + esc(j.state.report_path) + '</code><br><code>' + esc(j.state.json_path) + '</code></details>';
 }
+// Jobs are re-rendered every poll; remember which path disclosures the user opened. 'toggle' does not bubble, so capture it.
+const openPaths = new Set();
+$('jobs').addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!d.dataset || !d.dataset.job) return;
+  if (d.open) openPaths.add(Number(d.dataset.job)); else openPaths.delete(Number(d.dataset.job));
+}, true);
 
 function queuePosition(j) {
   const q = jobs.filter(x => x.state.state === 'queued').map(x => x.id).sort((a, b) => a - b);
@@ -521,9 +574,10 @@ function renderJobs() {
     const tb = $('jobs');
     const visible = pageRows('jobs', jobs);
     if (!jobs.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">Nothing analyzed yet.</td></tr>'; return; }
-    tb.innerHTML = visible.map(j => '<tr><td>' + j.id + '</td><td>' + esc(j.file_name)
+    const html = visible.map(j => '<tr><td>' + j.id + '</td><td>' + esc(j.file_name)
       + (j.max_visits ? '<br><span class="status">' + j.max_visits + ' visits</span>' : '')
       + '</td><td>' + statusCell(j) + '</td><td>' + resultCell(j) + '</td><td>' + reportCell(j) + '</td></tr>').join('');
+    if (html !== tb.innerHTML) tb.innerHTML = html;   // unchanged rows keep focus and open disclosures
 }
 
 async function loadJobs() {
@@ -692,13 +746,14 @@ function drawCandidates(t) {
   const played = t.next_move ? t.next_move.move : null;
   tb.innerHTML = t.eval.candidates.map(c => {
     const wr = mover === 'Black' ? c.winrate : 1 - c.winrate;
-    return '<tr' + (c.move === played ? ' class="played"' : '') + '><td><b>' + c.move + '</b>' + (c.move === played ? ' ◀ played' : '') + '</td>'
-      + '<td>' + (wr * 100).toFixed(1) + '%</td><td>' + lead(c.score_lead) + '</td>'
-      + '<td><span class="minibar" style="width:' + Math.round(90 * c.visits / total) + 'px"></span> ' + c.visits + '</td>'
-      + '<td><span class="minibar pol" style="width:' + Math.round(90 * c.prior) + 'px"></span> ' + (c.prior * 100).toFixed(1) + '%</td></tr>';
+    // Bars sit under the number in a short capped track; fill = visits / displayed total, and = prior, exactly as before.
+    return '<tr' + (c.move === played ? ' class="played"' : '') + '><td class="mv"><b>' + c.move + '</b>' + (c.move === played ? '<span class="played-tag">◀ played</span>' : '') + '</td>'
+      + '<td class="num">' + (wr * 100).toFixed(1) + '%</td><td class="num">' + lead(c.score_lead) + '</td>'
+      + '<td class="num">' + c.visits + '<span class="minibar"><i style="width:' + (100 * c.visits / total).toFixed(1) + '%"></i></span></td>'
+      + '<td class="num">' + (c.prior * 100).toFixed(1) + '%<span class="minibar pol"><i style="width:' + (100 * c.prior).toFixed(1) + '%"></i></span></td></tr>';
   }).join('');
   if (played && played !== 'pass' && !t.eval.candidates.some(c => c.move === played)) {
-    tb.innerHTML += '<tr class="played"><td><b>' + played + '</b> ◀ played</td><td colspan="4" class="status">not among KataGo\'s searched moves</td></tr>';
+    tb.innerHTML += '<tr class="played"><td class="mv"><b>' + played + '</b><span class="played-tag">◀ played</span></td><td colspan="4" class="status">not among KataGo\'s searched moves</td></tr>';
   }
 }
 
@@ -766,6 +821,14 @@ $('chart').addEventListener('click', (e) => {
   refreshLive();
 });
 
+// Shared evaluation summary for the mainline and variation modes: short wrapping groups, two lines.
+// Values keep their existing meaning: the summary win rate is Black's, score is B+/W+, visits are root search visits.
+const eg = (label, value, cls) => '<span class="eg' + (cls ? ' ' + cls : '') + '">' + label + (value === undefined ? '' : ' <b>' + value + '</b>') + '</span>';
+function evalSummary(e, lead1, line2) {
+  return '<div class="evalgroups">' + (lead1 || '') + eg(esc(e.to_move) + ' to play') + eg('Black win rate', fmtPct(e.winrate)) + eg('Score', lead(e.score_lead)) + eg('Search visits', e.visits) + '</div>'
+    + (line2 ? '<div class="evalgroups">' + line2 + '</div>' : '');
+}
+
 // ---- variation exploration: ask KataGo about a continuation from the shown position
 const exploring = { moves: [] };
 async function explore(mv) {
@@ -777,8 +840,9 @@ async function explore(mv) {
   view.lastKey = 'explore:' + exploring.moves.join(',');
   drawBoard(t); drawCandidates(t); updateLegend(t);
   const e = t.eval;
-  $('evalline').innerHTML = '<b>Variation from move ' + view.turn + ':</b> ' + esc(exploring.moves.join(' ')) + ' — ' + e.to_move + ' to play, Black winrate <b>' + fmtPct(e.winrate) + '</b>, score <b>' + lead(e.score_lead) + '</b> (' + e.visits + ' visits). '
-    + 'Click another empty point to continue, or <button class="linkbtn" style="color:var(--accent)" onclick="exploreBack()">back</button> <button class="linkbtn" onclick="exploreReset()">leave variation</button>';
+  $('evalline').innerHTML = evalSummary(e,
+    eg('<b>Variation from move ' + view.turn + ':</b> ' + esc(exploring.moves.join(' ')), undefined, 'wrap'),
+    eg('Click another empty point to continue, or', undefined, 'wrap') + eg('<button class="linkbtn" style="color:var(--accent)" onclick="exploreBack()">back</button> <button class="linkbtn" onclick="exploreReset()">leave variation</button>'));
 }
 function exploreBack() { exploring.moves.pop(); if (exploring.moves.length) { const m = exploring.moves.pop(); explore(m); } else exploreReset(); }
 function exploreReset() { exploring.moves = []; view.lastKey = ''; refreshLive(); }
@@ -801,8 +865,9 @@ async function refreshLive() {
     if (t.eval) {
       const nm = t.next_move ? (t.next_move.color + ' ' + t.next_move.move) : 'end of game';
       const rank = t.next_move ? t.eval.candidates.findIndex(c => c.move === t.next_move.move) : -1;
-      $('evalline').innerHTML = (t.eval.deepened ? '<span class="badge-deep">◆ deep</span> ' : '') + '<b>' + t.eval.to_move + ' to play.</b> Black winrate <b>' + fmtPct(t.eval.winrate) + '</b>, score <b>' + lead(t.eval.score_lead) + '</b>, ' + t.eval.visits + ' visits. '
-        + 'Move played: <b>' + esc(nm) + '</b>' + (rank >= 0 ? ' (KataGo\'s #' + (rank + 1) + ' choice)' : (t.next_move && t.next_move.move !== 'pass' ? ' (not among searched moves)' : '')) + '.';
+      $('evalline').innerHTML = evalSummary(t.eval,
+        t.eval.deepened ? '<span class="eg"><span class="badge-deep">◆ deep</span></span>' : '',
+        eg('Played:', esc(nm)) + (rank >= 0 ? eg('engine choice #' + (rank + 1)) : (t.next_move && t.next_move.move !== 'pass' ? eg('not among searched moves') : '')));
     } else {
       $('evalline').innerHTML = '<span class="status">Position after move ' + view.turn + ' — KataGo has not reached this position yet.</span>';
     }
@@ -830,7 +895,7 @@ function renderFiles() {
     const visible = pageRows('files', reportFiles);
     const tb = $('files');
     if (!reportFiles.length) { tb.innerHTML = '<tr><td colspan="5" class="empty">No report files yet.</td></tr>'; return; }
-    tb.innerHTML = visible.map(f => '<tr><td>' + esc(f.name) + '</td><td>' + f.kind + '</td><td>' + fmtSize(f.size) + '</td><td>' + esc(f.modified.replace('T', ' ').slice(0, 19)) + '</td><td>'
+    tb.innerHTML = visible.map(f => '<tr><td class="fname">' + esc(f.name) + '</td><td>' + f.kind + '</td><td class="nw">' + fmtSize(f.size) + '</td><td class="nw">' + esc(f.modified.replace('T', ' ').slice(0, 19)) + '</td><td class="act">'
       + (f.kind === 'json' ? '<button class="small" onclick="loadJson(this.dataset.n)" data-n="' + esc(f.name) + '">load into viewer</button> ' : '')
       + '<button class="small danger" onclick="delFile(this)" data-n="' + esc(f.name) + '">delete</button></td></tr>').join('');
 }
@@ -881,6 +946,10 @@ setInterval(refreshLive, 1000);
 setInterval(() => { if (!engineReady) loadStatus(); }, 2000);
 setInterval(loadStatus, 15000);
 window.addEventListener('resize', drawChart);
+// Redraw when the analysis pane itself changes width (stack/unstack, card reveal), not only on window resize.
+if ('ResizeObserver' in window) new ResizeObserver(() => { if (!$('livecard').hidden) drawChart(); }).observe(document.querySelector('.live-analysis'));
+$('settingsbody').addEventListener('input', () => { settingsTouched = true; });
+$('settingsbody').addEventListener('click', (e) => { if (e.target.closest('button, input')) settingsTouched = true; });
 </script>
 </body>
 </html>
